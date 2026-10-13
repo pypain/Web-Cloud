@@ -37,7 +37,7 @@ async function init() {
 async function persist() {
   await new Promise((resolve,reject) => { const tx = db.transaction('entries','readwrite'); const store = tx.objectStore('entries'); store.clear(); entries.forEach(e => store.put(e)); tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); });
 }
-async function change(fn, message) { const before = structuredClone(entries); try { fn(); await persist(); render(); if(message) toast(message); } catch(e) { entries = before; render(); toast('Не удалось сохранить. Возможно, хранилище браузера заполнено.',true); } }
+async function change(fn, message) { const before = structuredClone(entries); try { fn(); render(); await persist(); if(message) toast(message); } catch(e) { entries = before; render(); toast('Не удалось сохранить. Возможно, хранилище браузера заполнено.',true); } }
 function visible() {
   let list = entries.filter(e => page === 'trash' ? e.deleted && !get(e.parent)?.deleted : page === 'links' ? !e.deleted && e.shared : !e.deleted && (query ? true : e.parent === folder));
   if(query) list = list.filter(e => e.name.toLocaleLowerCase().includes(query.toLocaleLowerCase()));
