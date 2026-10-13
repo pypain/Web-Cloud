@@ -13,7 +13,7 @@ export async function request(path, options = {}) {
   if (!response.ok) {
     let message = `Ошибка сервера (${response.status})`;
     try { const data = await response.json(); message = data.error || message; } catch {}
-    if (response.status === 409) message = 'Хранилище изменилось в другой вкладке. Обновите страницу перед редактированием.';
+    if (response.status === 409) message = path==='profile' ? 'Профиль изменён в другой вкладке. Обновите страницу перед сохранением.' : 'Хранилище изменилось в другой вкладке. Обновите страницу перед редактированием.';
     if (response.status === 413) message = 'Превышен лимит файла или объём хранилища.';
     if (response.status === 507) message = 'Недостаточно свободного места на сервере.';
     const error = new Error(message); error.status = response.status; throw error;

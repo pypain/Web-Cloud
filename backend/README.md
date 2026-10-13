@@ -75,3 +75,16 @@ links for rollback, and does not delete existing file data or change credentials
 If the backend is absent, it uses the guarded first-install path. Finish existing
 legacy uploads before upgrading; the older whole-file protocol cannot resume a
 transfer that started before this version.
+
+## Profile and appearance
+
+The private `/profile` API stores display name, description, one of six accent
+colors, a motion preference and an optional PNG avatar in SQLite. Optimistic
+version checks reject concurrent profile overwrites. The browser crops raster
+photos to 160×160 pixels; the backend bounds encoded size and PNG dimensions.
+The profile is shared by this single-owner storage, not a separate login or
+multi-user account. Existing HTTP Basic credentials remain unchanged.
+
+Appearance settings are applied on page load across devices. System
+`prefers-reduced-motion` overrides the profile's animation preference. Navigation
+animations are limited to view changes, avoiding replay while typing a search.

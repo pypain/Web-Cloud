@@ -84,3 +84,29 @@ test('fast connections use larger chunks and fewer requests', async ({page})=>{
   expect(offsets[1]).toBe(8*1024*1024);
   expect(offsets.length).toBeLessThan(10); // The previous fixed 4 MiB protocol needs ten requests.
 });
+test('profile customizations persist across browsers and respect reduced motion',async({browser,page})=>{
+  await page.goto('/cloud/');
+  await page.getByRole('button',{name:'Настроить профиль',exact:true}).click();
+  await page.getByLabel('Имя профиля',{exact:true}).fill('Моё пространство');
+  await page.getByLabel('О себе',{exact:true}).fill('Файлы и проекты');
+  await page.getByRole('radio',{name:'Мятный',exact:true}).check();
+  // Create a real raster image in the browser, then test the upload/crop pipeline.
+  const png=await page.evaluate(()=>{const c=document.createElement('canvas');c.width=40;c.height=60;c.getContext('2d').fillRect(0,0,40,60);return c.toDataURL().split(',')[1];});
+  await page.locator('#profile-avatar-file').setInputFiles({name:'avatar.png',mimeType:'image/png',buffer:Buffer.from(png,'base64')});
+  await expect(page.locator('#profile-avatar-preview img')).toBeVisible();
+  await page.getByRole('button',{name:'Сохранить профиль',exact:true}).click();
+  await expect(page.locator('.toast')).toContainText('Профиль сохранён');
+  const context=await browser.newContext({reducedMotion:'reduce',viewport:{width:390,height:844}});
+  const other=await context.newPage();await other.goto('http://127.0.0.1:4178/cloud/');
+  await expect(other.locator('.avatar.small img')).toBeVisible();
+  expect(await other.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())).toBe('#83d8c0');
+  expect(await other.locator('.view-enter').evaluate(el=>getComputedStyle(el).animationName)).toBe('none');
+  await other.getByRole('button',{name:'Настроить профиль',exact:true}).click();
+  await expect(other.getByLabel('Имя профиля',{exact:true})).toHaveValue('Моё пространство');
+  await expect(other.getByLabel('О себе',{exact:true})).toHaveValue('Файлы и проекты');
+  await other.getByLabel('Плавные анимации',{exact:true}).uncheck();
+  await other.getByRole('button',{name:'Сохранить профиль',exact:true}).click();
+  await expect(other.locator('html')).toHaveAttribute('data-motion','off');
+  await other.screenshot({path:'test-results/profile-mobile.png',fullPage:true});
+  await context.close();
+});

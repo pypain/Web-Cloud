@@ -2,6 +2,8 @@
 """Single-owner file storage. Private Unix socket, authenticated nginx in front."""
 import hmac
 import hashlib
+import base64
+import struct
 import json
 import os
 import pathlib
@@ -42,6 +44,8 @@ class Store:
             db.execute("INSERT OR IGNORE INTO state VALUES (1, 0, '[]')")
             db.execute('CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, meta TEXT NOT NULL, total INTEGER NOT NULL, offset INTEGER NOT NULL, hashes TEXT NOT NULL, updated REAL NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS cancelled_uploads (id TEXT PRIMARY KEY, updated REAL NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS profile (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, settings TEXT NOT NULL)')
+            db.execute('INSERT OR IGNORE INTO profile VALUES (1,0,?)',(json.dumps({'name':'Личное пространство','bio':'','accent':'violet','motion':True,'avatar':''}),))
 
     def connect(self):
         return sqlite3.connect(self.root / 'state.sqlite', timeout=30)
@@ -270,6 +274,30 @@ class Handler(BaseHTTPRequestHandler):
             path = parsed.path
             if not write and path == '/health':
                 return self.reply(200, {'ok': True})
+            if path=='/profile':
+                with store.lock, store.connect() as db:
+                    version,settings=db.execute('SELECT version,settings FROM profile WHERE id=1').fetchone()
+                    if not write: return self.reply(200,{'version':version,'profile':json.loads(settings)})
+                    length=self.length(160*1024)
+                    try: data=json.loads(self.read_exact(length))
+                    except (ValueError,UnicodeError): raise Problem(400,'Invalid profile')
+                    if not isinstance(data,dict) or not isinstance(data.get('profile'),dict): raise Problem(400,'Invalid profile')
+                    if type(data.get('version')) is not int or data['version']!=version: raise Problem(409,'Profile changed; reload before saving')
+                    profile=data['profile'];name=profile.get('name');bio=profile.get('bio','');avatar=profile.get('avatar','')
+                    if not isinstance(name,str) or not name.strip() or len(name.strip())>40 or re.search(r'[\x00-\x1f\x7f]',name): raise Problem(400,'Invalid profile name')
+                    if not isinstance(bio,str) or len(bio)>160 or re.search(r'[\x00-\x1f\x7f]',bio): raise Problem(400,'Invalid profile description')
+                    if profile.get('accent') not in ('violet','blue','mint','rose','amber','silver') or type(profile.get('motion')) is not bool: raise Problem(400,'Invalid appearance settings')
+                    if not isinstance(avatar,str): raise Problem(400,'Invalid avatar')
+                    if avatar:
+                        if not avatar.startswith('data:image/png;base64,'): raise Problem(400,'Avatar must be PNG')
+                        try: raw=base64.b64decode(avatar.split(',',1)[1],validate=True)
+                        except ValueError: raise Problem(400,'Invalid avatar data')
+                        if len(raw)>100*1024 or len(raw)<24 or raw[:8]!=b'\x89PNG\r\n\x1a\n' or raw[12:16]!=b'IHDR': raise Problem(400,'Invalid PNG avatar')
+                        width,height=struct.unpack('>II',raw[16:24])
+                        if not (1<=width<=256 and 1<=height<=256): raise Problem(400,'Avatar dimensions too large')
+                    clean={'name':name.strip(),'bio':bio.strip(),'accent':profile['accent'],'motion':profile['motion'],'avatar':avatar}
+                    db.execute('UPDATE profile SET version=?,settings=? WHERE id=1',(version+1,json.dumps(clean)))
+                return self.reply(200,{'version':version+1,'profile':clean})
             if path.startswith('/uploads/'):
                 fields=path[len('/uploads/'):].split('/')
                 if len(fields)>2: raise Problem(404,'Not found')

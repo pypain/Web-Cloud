@@ -1,0 +1,30 @@
+import { request, serverStorage } from './server-storage.js';
+export const accents = { violet: ['Фиолетовый','#b29af8'], blue: ['Голубой','#88b8ff'], mint: ['Мятный','#83d8c0'], rose: ['Розовый','#eda2c5'], amber: ['Янтарный','#e8bd82'], silver: ['Серебряный','#b8c3d6'] };
+export const defaults = { name:'Личное пространство',bio:'',accent:'violet',motion:true,avatar:'' };
+export let profile={...defaults};
+let version=0;
+export function applyProfile(value) {
+  profile={...defaults,...value};
+  document.documentElement.style.setProperty('--accent',accents[profile.accent]?.[1]||accents.violet[1]);
+  document.documentElement.dataset.motion=profile.motion?'on':'off';
+}
+export async function loadProfile() {
+  if(serverStorage) {const data=await (await request('profile')).json();version=data.version;applyProfile(data.profile);}
+  else {try{applyProfile(JSON.parse(localStorage.getItem('hxry-profile-v1'))||defaults);}catch{applyProfile(defaults);}}
+}
+export async function saveProfile(value) {
+  if(serverStorage){const data=await (await request('profile',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({version,profile:value})})).json();version=data.version;applyProfile(data.profile);}
+  else {localStorage.setItem('hxry-profile-v1',JSON.stringify(value));applyProfile(value);}
+}
+export async function avatarFromFile(file) {
+  if(!['image/png','image/jpeg','image/webp','image/gif'].includes(file.type)||file.size>5*1024**2)throw new Error('Выберите PNG, JPEG, WebP или GIF размером до 5 МБ.');
+  const image=await createImageBitmap(file);
+  try {
+    const canvas=document.createElement('canvas');canvas.width=160;canvas.height=160;
+    const context=canvas.getContext('2d');const side=Math.min(image.width,image.height);
+    context.drawImage(image,(image.width-side)/2,(image.height-side)/2,side,side,0,0,160,160);
+    const result=canvas.toDataURL('image/png');
+    if(result.length>136000)throw new Error('Изображение слишком сложное. Выберите другое.');
+    return result;
+  } finally {image.close();}
+}
