@@ -1,0 +1,27 @@
+import { test, expect } from '@playwright/test';
+test('file uploaded on one browser is previewed and downloaded on a separate browser', async ({ browser, page }) => {
+  const errors = []; page.on('pageerror', e => errors.push(e.message));
+  await page.goto('/cloud/');
+  await expect(page.getByRole('heading', { name: 'Мои файлы', exact: true })).toBeVisible();
+  await expect(page.locator('.local-tag')).toContainText('На сервере');
+  await page.locator('#file-input').setInputFiles({ name: 'server-file.txt', mimeType: 'text/plain', buffer: Buffer.from('Stored on the server') });
+  await expect(page.locator('.toast')).toContainText('Загружено файлов: 1');
+  const context = await browser.newContext();
+  const other = await context.newPage();
+  await other.goto('http://127.0.0.1:4178/cloud/');
+  await other.locator('.file-name').filter({ hasText: 'server-file.txt' }).click();
+  await expect(other.locator('#text-preview')).toHaveText('Stored on the server');
+  const download = other.waitForEvent('download');
+  await other.getByRole('button', { name: 'Скачать файл', exact: true }).click();
+  expect((await download).suggestedFilename()).toBe('server-file.txt');
+  await other.getByLabel('Закрыть предпросмотр').click();
+  await other.getByLabel('Действия: server-file.txt').click();
+  await other.getByRole('menuitem', { name: 'В корзину', exact: true }).click();
+  await expect(other.locator('.toast')).toContainText('Перемещено в корзину');
+  await page.reload();
+  await expect(page.locator('.file-name').filter({ hasText: 'server-file.txt' })).toHaveCount(0);
+  await page.locator('[data-nav="trash"]').click();
+  await expect(page.locator('.file-name').filter({ hasText: 'server-file.txt' })).toBeVisible();
+  expect(errors).toEqual([]);
+  await context.close();
+});
