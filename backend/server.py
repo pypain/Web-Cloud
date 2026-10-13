@@ -78,17 +78,23 @@ class Store:
         with self.connect() as db:
             row = db.execute('SELECT meta,total,offset,hashes FROM uploads WHERE id=?',(ident,)).fetchone()
         if not row: raise Problem(404, 'Upload expired or not found')
-        return {'status':'pending','meta':json.loads(row[0]),'total':row[1], 'offset':row[2], 'hashes':json.loads(row[3]), 'chunkSize':4*1024**2}
+        meta=json.loads(row[0]); protocol=meta.get('_protocol',1)
+        return {'status':'pending','meta':meta,'total':row[1], 'offset':row[2], 'hashes':json.loads(row[3]), 'protocol':protocol, 'chunkSize':(32 if protocol==2 else 4)*1024**2}
 
     def create_upload(self, ident, meta):
         self.cleanup_uploads()
         self.path(ident)
+        if not isinstance(meta,dict): raise Problem(400,'Invalid upload')
+        meta=dict(meta)
+        protocol=meta.pop('protocol',1)
+        meta.pop('_protocol',None)
+        if type(protocol) is not int or protocol not in (1,2): raise Problem(400,'Invalid upload protocol')
         with self.connect() as db:
             if db.execute('SELECT 1 FROM cancelled_uploads WHERE id=?',(ident,)).fetchone(): raise Problem(410,'Upload cancelled; start a new upload')
         try:
             existing = self.upload(ident)
             if existing['status']=='done': return existing
-            if existing['meta'] != meta: raise Problem(409, 'Upload identity changed')
+            if {key:value for key,value in existing['meta'].items() if key not in ('_protocol','protocol')} != meta: raise Problem(409, 'Upload identity changed')
             return existing
         except Problem as error:
             if error.code!=404: raise
@@ -105,15 +111,16 @@ class Store:
         if shutil.disk_usage(self.root).free-size<self.reserve: raise Problem(507,'Host disk reserve reached')
         with self.connect() as db:
             if db.execute('SELECT COUNT(*) FROM uploads').fetchone()[0]>=10000: raise Problem(413,'Too many pending uploads')
-            db.execute('INSERT INTO uploads VALUES (?,?,?,0,?,?)',(ident,json.dumps(meta),size,'[]',time.time()))
+            stored_meta={**meta,'_protocol':2} if protocol==2 else meta
+            db.execute('INSERT INTO uploads (id,meta,total,offset,hashes,updated) VALUES (?,?,?,0,?,?)',(ident,json.dumps(stored_meta),size,'[]',time.time()))
         return self.upload(ident)
 
     def append_upload(self, ident, offset, body, digest):
         item=self.upload(ident)
         if item['status']=='done': return item
         if offset!=item['offset']: raise Problem(409,'Chunk offset changed; check upload status')
-        expected=min(4*1024**2,item['total']-offset)
-        if len(body)!=expected or not expected: raise Problem(400,'Invalid chunk length')
+        expected=min(item['chunkSize'],item['total']-offset)
+        if not len(body) or len(body)>expected or (item['protocol']==1 and len(body)!=expected): raise Problem(400,'Invalid chunk length')
         if not hmac.compare_digest(hashlib.sha256(body).hexdigest(),digest): raise Problem(400,'Chunk checksum mismatch')
         if shutil.disk_usage(self.root).free-len(body)<self.reserve: raise Problem(507,'Host disk reserve reached')
         path=self.parts/ident
@@ -122,7 +129,7 @@ class Store:
             stream.truncate(offset); stream.seek(offset); stream.write(body); stream.flush(); os.fsync(stream.fileno())
         with self.connect() as db:
             db.execute('UPDATE uploads SET offset=?,hashes=?,updated=? WHERE id=?',
-                       (offset+len(body),json.dumps(item['hashes']+[digest]),time.time(),ident))
+                       (offset+len(body),json.dumps(item['hashes']+[{'size':len(body),'sha256':digest} if item['protocol']==2 else digest]),time.time(),ident))
         return self.upload(ident)
 
     def finish_upload(self, ident):
@@ -134,7 +141,9 @@ class Store:
         if item['total']==0 and not path.exists(): path.touch(mode=0o600)
         with path.open('rb') as stream:
             for digest in item['hashes']:
-                if hashlib.sha256(stream.read(4*1024**2)).hexdigest()!=digest: raise Problem(409,'Stored chunk failed integrity check')
+                size=digest['size'] if isinstance(digest,dict) else 4*1024**2
+                expected=digest['sha256'] if isinstance(digest,dict) else digest
+                if hashlib.sha256(stream.read(size)).hexdigest()!=expected: raise Problem(409,'Stored chunk failed integrity check')
             if stream.read(1) or path.stat().st_size!=item['total']: raise Problem(409,'Stored file length changed')
         if path!=final: os.replace(path,final)
         state=self.state(); meta=item['meta']; name=meta['name']; parent=meta.get('parent')
@@ -275,7 +284,7 @@ class Handler(BaseHTTPRequestHandler):
                         except (ValueError,UnicodeError): raise Problem(400,'Invalid JSON')
                         result=store.create_upload(ident,meta)
                     elif write and action=='chunk':
-                        length=self.length(4*1024**2)
+                        length=self.length(32*1024**2)
                         offset=parse_qs(parsed.query).get('offset',[''])[0]
                         if not offset.isdigit(): raise Problem(400,'Invalid offset')
                         digest=self.headers.get('X-Chunk-SHA256','')

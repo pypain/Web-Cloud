@@ -195,5 +195,32 @@ class StorageTests(unittest.TestCase):
         connection.close()
         self.assertEqual(json.loads(self.request('GET','/uploads/'+ident)[2])['offset'],0)
 
+    def test_adaptive_chunk_sizes_and_integrity(self):
+        self.store.max_file=64*1024**2;self.store.quota=100*1024**2
+        ident=str(uuid.uuid4()); chunks=[b'a'*(8*1024**2),b'b'*(16*1024**2),b'final']
+        meta={'name':'adaptive.bin','size':sum(map(len,chunks)),'parent':None,'mime':'application/octet-stream','fingerprint':'a'*64,'protocol':2}
+        response=self.request('PUT','/uploads/'+ident,meta)
+        self.assertEqual(response[0],200)
+        self.assertEqual(json.loads(response[2])['chunkSize'],32*1024**2)
+        offset=0
+        for chunk in chunks:
+            self.assertEqual(self.chunk(ident,offset,chunk)[0],200);offset+=len(chunk)
+        self.server.store=Store(self.temp.name,'test-token',reserve=0)
+        state=json.loads(self.request('GET','/uploads/'+ident)[2])
+        self.assertEqual([chunk['size'] for chunk in state['hashes']],list(map(len,chunks)))
+        self.assertEqual(self.request('PUT','/uploads/'+ident+'/complete')[0],200)
+        self.assertEqual(self.request('GET','/files/'+ident,headers={'Range':f'bytes={len(chunks[0])-2}-{len(chunks[0])+1}'})[2],b'aabb')
+
+    def test_old_sessions_keep_four_mib_protocol(self):
+        chunk=b'x'*(4*1024**2);ident,meta=self.session(len(chunk)+1)
+        self.assertEqual(self.chunk(ident,0,chunk)[0],200)
+        response=self.request('PUT','/uploads/'+ident,{**meta,'protocol':2})
+        self.assertEqual(response[0],200)
+        state=json.loads(response[2])
+        self.assertEqual((state['protocol'],state['chunkSize'],state['offset']),(1,4*1024**2,len(chunk)))
+        self.assertIsInstance(state['hashes'][0],str)
+        self.assertEqual(self.chunk(ident,len(chunk),b'z')[0],200)
+        self.assertEqual(self.request('PUT','/uploads/'+ident+'/complete')[0],200)
+
 
 if __name__ == '__main__': unittest.main()

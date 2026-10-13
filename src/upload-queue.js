@@ -2,6 +2,13 @@ import { request, serverMaxFile } from './server-storage.js';
 const KEY = 'hxry-upload-queue-v1';
 const API = `${import.meta.env.BASE_URL}api/`;
 const CHUNK = 4 * 1024 ** 2;
+// Aim for about two seconds per request, bounded to 4–32 MiB.
+function preferredChunk(bytesPerSecond, maximum) {
+  const target=bytesPerSecond*2;
+  let size=CHUNK;
+  while(size*2<=maximum&&size*2<=target)size*=2;
+  return Math.min(size,maximum);
+}
 const labels = { queued: 'В очереди', uploading: 'Загрузка', checking: 'Проверка файла', finishing: 'Проверка на сервере', paused: 'Пауза', retrying: 'Повтор соединения', offline: 'Нет соединения', source: 'Выберите исходный файл', done: 'Загружен', cancelled: 'Отменён', error: 'Ошибка' };
 const esc = text => String(text ?? '').replace(/[&<>"']/g, c => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;', "'":'&#39;' }[c]));
 const bytes = n => n >= 1024 ** 3 ? `${(n/1024**3).toFixed(2)} ГБ` : `${(n/1024**2).toFixed(1)} МБ`;
@@ -138,19 +145,39 @@ export class UploadQueue {
         try {
           if(!navigator.onLine) {item.status='offline';this.save();continue;}
           item.status='checking'; item.error=''; this.save();
-          let state=await (await request(`uploads/${item.id}`,{method:'PUT',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({name:item.name,size:item.size,parent:item.parent,mime:item.mime,fingerprint:item.fingerprint})})).json();
+          let state=await (await request(`uploads/${item.id}`,{method:'PUT',signal,headers:{'Content-Type':'application/json'},body:JSON.stringify({name:item.name,size:item.size,parent:item.parent,mime:item.mime,fingerprint:item.fingerprint,protocol:2})})).json();
           if(state.status!=='done') {
+            let verifiedOffset=0;
             for(let n=0;n<state.hashes.length;n++) {
               if(signal.aborted)throw new DOMException('Пауза','AbortError');
-              if(await hash(file.slice(n*CHUNK,Math.min((n+1)*CHUNK,item.size)))!==state.hashes[n])throw new Error('Содержимое исходного файла изменилось. Отмените загрузку и начните новую.');
+              const record=state.hashes[n], length=typeof record==='string'?Math.min(CHUNK,item.size-verifiedOffset):record.size;
+              const digest=typeof record==='string'?record:record.sha256;
+              if(await hash(file.slice(verifiedOffset,verifiedOffset+length))!==digest)throw new Error('Содержимое исходного файла изменилось. Отмените загрузку и начните новую.');
+              verifiedOffset+=length;
             }
+            if(verifiedOffset!==state.offset)throw new Error('Сервер вернул некорректную позицию загрузки.');
             item.offset=state.offset; item.loaded=state.offset; this.save();
+            const modern=state.protocol===2, maximum=state.chunkSize;
+            let nextSize=modern?Math.min(8*1024**2,maximum):CHUNK;
+            const prepare=(offset,size)=>{
+              const blob=file.slice(offset,Math.min(offset+size,item.size));
+              // Settle prefetch errors even if a pause means this promise is never consumed.
+              return hash(blob).then(digest=>({blob,digest}),error=>({error}));
+            };
+            let prepared=item.offset<item.size?prepare(item.offset,nextSize):null;
             while(item.offset<item.size) {
               if(signal.aborted)throw new DOMException('Пауза','AbortError');
               item.status='uploading';
-              const blob=file.slice(item.offset,Math.min(item.offset+CHUNK,item.size)), digest=await hash(blob);
+              const ready=await prepared;if(ready.error)throw ready.error;
+              const {blob,digest}=ready;
               if(signal.aborted)throw new DOMException('Пауза','AbortError');
-              state=await this.chunk(item,blob,digest); item.offset=state.offset;item.loaded=state.offset;item.retries=0; this.save();
+              const followingOffset=item.offset+blob.size;
+              prepared=followingOffset<item.size?prepare(followingOffset,nextSize):null;
+              const started=performance.now();
+              state=await this.chunk(item,blob,digest);
+              const effectiveSpeed=blob.size*1000/Math.max(1,performance.now()-started);
+              nextSize=modern?preferredChunk(effectiveSpeed,maximum):CHUNK;
+              item.speed=effectiveSpeed;item.offset=state.offset;item.loaded=state.offset;item.retries=0; this.save();
             }
             if(signal.aborted)throw new DOMException('Пауза','AbortError');
             item.status='finishing'; item.speed=0; this.save();

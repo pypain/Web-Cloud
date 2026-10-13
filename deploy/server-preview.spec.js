@@ -26,14 +26,14 @@ test('file uploaded on one browser is previewed and downloaded on a separate bro
   await context.close();
 });
 test('queue resumes after a reload from the confirmed chunk and rejects a different source file', async ({ page }) => {
-  const data=Buffer.alloc(4*1024*1024+100,65);
+  const data=Buffer.alloc(8*1024*1024+100,65);
   await page.goto('/cloud/');
-  await page.route('**/uploads/*/chunk?offset=4194304',route=>route.abort('internetdisconnected'));
+  await page.route('**/uploads/*/chunk?offset=8388608',route=>route.abort('internetdisconnected'));
   await page.locator('#file-input').setInputFiles({name:'resume.bin',mimeType:'application/octet-stream',buffer:data});
-  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('hxry-upload-queue-v1')).find(q=>q.name==='resume.bin')?.offset)).toBe(4194304);
+  await expect.poll(()=>page.evaluate(()=>JSON.parse(localStorage.getItem('hxry-upload-queue-v1')).find(q=>q.name==='resume.bin')?.offset)).toBe(8388608);
   await expect(page.locator('.file-name').filter({hasText:'resume.bin'})).toHaveCount(0);
   await page.reload();
-  await page.unroute('**/uploads/*/chunk?offset=4194304');
+  await page.unroute('**/uploads/*/chunk?offset=8388608');
   const row=page.locator('.upload-item').filter({hasText:'resume.bin'});
   await expect(row.getByRole('button',{name:'Выбрать файл'})).toBeVisible();
   let chooser=page.waitForEvent('filechooser'); await row.getByRole('button',{name:'Выбрать файл'}).click();
@@ -45,7 +45,7 @@ test('queue resumes after a reload from the confirmed chunk and rejects a differ
   chooser=page.waitForEvent('filechooser');await row.getByRole('button',{name:'Выбрать файл'}).click();
   await (await chooser).setFiles({name:'resume.bin',mimeType:'application/octet-stream',buffer:data});
   await expect(row).toContainText('Загружен');
-  expect(offsets).toEqual([4194304]);
+  expect(offsets).toEqual([8388608]);
   await expect(page.locator('.file-name').filter({hasText:'resume.bin'})).toBeVisible();
 });
 test('multiple files expose progress, pause, cancellation and completion independently', async ({ page }) => {
@@ -73,4 +73,14 @@ test('multiple files expose progress, pause, cancellation and completion indepen
   await expect(first).toContainText('Загружен');
   await expect(first.locator('progress')).toHaveAttribute('value','100');
   await expect(page.locator('.file-name').filter({hasText:'queue-second.bin'})).toHaveCount(0);
+});
+test('fast connections use larger chunks and fewer requests', async ({page})=>{
+  await page.goto('/cloud/');
+  const offsets=[];
+  page.on('request',request=>{const match=request.url().match(/\/chunk\?offset=(\d+)/);if(match)offsets.push(Number(match[1]));});
+  await page.locator('#file-input').setInputFiles({name:'fast-upload.bin',mimeType:'application/octet-stream',buffer:Buffer.alloc(40*1024*1024,68)});
+  await expect(page.locator('.upload-item').filter({hasText:'fast-upload.bin'})).toContainText('Загружен',{timeout:20000});
+  expect(offsets[0]).toBe(0);
+  expect(offsets[1]).toBe(8*1024*1024);
+  expect(offsets.length).toBeLessThan(10); // The previous fixed 4 MiB protocol needs ten requests.
 });

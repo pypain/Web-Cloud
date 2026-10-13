@@ -43,7 +43,12 @@ The test proxy token is test-only and never used by the production service.
 ## Resumable upload queue
 
 The server reserves the full file size against the quota when a session starts.
-Content is sent in 4 MiB chunks, each verified against a client SHA-256 digest.
+New uploads start with 8 MiB chunks and adapt within 4–32 MiB using measured
+request duration, targeting about two seconds per request. SHA-256 for the next
+chunk is prepared while the current one is transferring. Network writes stay
+ordered: concurrent out-of-order requests are unnecessary for this protocol.
+Existing 4 MiB sessions retain their original protocol and remain resumable.
+Each chunk is verified against a client SHA-256 digest.
 Only flushed chunks whose offsets were committed to SQLite count as confirmed.
 Retries first query that offset; duplicate or out-of-order writes are rejected.
 The browser checks already confirmed chunk hashes against the reselected source
