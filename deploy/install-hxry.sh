@@ -19,7 +19,7 @@ nginx -t
 python3 - "$site" <<'PY'
 import pathlib,sys
 s=pathlib.Path(sys.argv[1]).read_text()
-assert s.count('    root /opt/vpnbot-rw;') == 1
+assert s.count('    root /opt/hexary-next/site;') == 1, 'Unexpected active site root'
 assert 'listen 10444 ssl proxy_protocol;' in s and 'server_name hxry.ru;' in s
 assert '/cloud' not in s, 'Existing cloud route; refusing conflict'
 PY
@@ -81,7 +81,7 @@ install -m 644 "$backup/hxry-cloud.conf" "$snippet"
 python3 - "$site" <<'PY'
 import pathlib,sys
 p=pathlib.Path(sys.argv[1]); s=p.read_text()
-anchor='    root /opt/vpnbot-rw;'
+anchor='    root /opt/hexary-next/site;'
 assert s.count(anchor)==1
 p.write_text(s.replace(anchor,'    include /etc/nginx/snippets/hxry-cloud.conf;\n\n'+anchor))
 PY
