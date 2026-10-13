@@ -6,7 +6,9 @@ umask 077
 [[ ${1:-} =~ ^[0-9a-f]{40}$ ]] || { echo 'Supply the full Git commit SHA'; exit 2; }
 ref=$1
 for tool in curl python3 nginx htpasswd sha256sum tar; do command -v "$tool" >/dev/null || { echo "Missing $tool (htpasswd is in apache2-utils)"; exit 1; }; done
-site=/etc/nginx/sites-available/hxry.ru
+site=$(readlink -f /etc/nginx/sites-enabled/hxry.ru)
+case "$site" in /etc/nginx/sites-available/*|/etc/nginx/sites-enabled/*) ;; *) echo 'Unexpected active site path'; exit 1;; esac
+echo "Active site file: $site"
 snippet=/etc/nginx/snippets/hxry-cloud.conf
 root=/var/www/hxry-cloud
 auth=/etc/nginx/hxry-cloud.htpasswd
@@ -24,6 +26,7 @@ PY
 backup=$(mktemp -d /root/hxry-cloud-backup-XXXXXXXX)
 chmod 700 "$backup"
 cp -p "$site" "$backup/hxry.ru"
+printf '%s\n' "$site" > "$backup/site-path"
 for endpoint in / /account; do
   label=${endpoint//\//_}
   curl --noproxy '*' --resolve hxry.ru:443:127.0.0.1 --connect-timeout 5 --max-time 15 -sS \
@@ -53,7 +56,9 @@ cat > "$backup/restore.sh" <<'RESTORE'
 #!/usr/bin/env bash
 set -euo pipefail
 dir=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")" && pwd)
-cp -p "$dir/hxry.ru" /etc/nginx/sites-available/hxry.ru
+site=$(cat "$dir/site-path")
+case "$site" in /etc/nginx/sites-available/*|/etc/nginx/sites-enabled/*) ;; *) exit 1;; esac
+cp -p "$dir/hxry.ru" "$site"
 nginx -t
 systemctl reload nginx
 rm -f /etc/nginx/snippets/hxry-cloud.conf
@@ -81,7 +86,31 @@ assert s.count(anchor)==1
 p.write_text(s.replace(anchor,'    include /etc/nginx/snippets/hxry-cloud.conf;\n\n'+anchor))
 PY
 nginx -t
+nginx -T 2>/dev/null | python3 -c '
+import sys
+s=sys.stdin.read()
+assert "# configuration file /etc/nginx/snippets/hxry-cloud.conf:" in s, "Cloud snippet is not included in the active nginx configuration"
+print("Cloud snippet found in active nginx configuration")
+'
 systemctl reload nginx
+# A successful reload request does not mean new workers already handle requests.
+python3 - <<'PY'
+import subprocess,time
+deadline=time.monotonic()+25
+last='no response'
+while True:
+    p=subprocess.run(['curl','--noproxy','*','--resolve','hxry.ru:443:127.0.0.1',
+                      '--connect-timeout','3','--max-time','4','-sS','-o','/dev/null',
+                      '-w','%{http_code}','https://hxry.ru/cloud/'],
+                     capture_output=True,text=True,timeout=6)
+    last=p.stdout.strip()
+    if p.returncode==0 and last=='401':
+        print('New nginx route is active; unauthenticated request returns 401')
+        break
+    if time.monotonic()>=deadline:
+        raise SystemExit(f'Cloud route did not become protected: last HTTP {last}, curl exit {p.returncode}')
+    time.sleep(0.5)
+PY
 for endpoint in / /account; do
   label=${endpoint//\//_}
   curl --noproxy '*' --resolve hxry.ru:443:127.0.0.1 --connect-timeout 5 --max-time 15 -sS \
