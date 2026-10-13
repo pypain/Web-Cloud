@@ -1,3 +1,4 @@
+import { UploadQueue } from './upload-queue.js';
 import { serverStorage, serverQuota, loadServer, saveServer, serverFile, serverText } from './server-storage.js';
 import { createIcons, Cloud, FolderClosed, Link, Trash2, HardDrive, ArrowUpRight, Settings2, Menu, CircleHelp, FolderPlus, Upload, Search, X, ArrowDownUp, ChevronDown, List, LayoutGrid, House, ChevronRight, ArrowDown, ArrowUp, Ellipsis, UploadCloud, RotateCcw, Download, FolderInput, Info, Check, CircleAlert, Eye, Pencil, Calendar, AArrowDown, Folder, Image, FileText, Sheet, Archive, Film, Music, FolderOpen, SearchX } from 'lucide';
 const icons = { Cloud, FolderClosed, Link, Trash2, HardDrive, ArrowUpRight, Settings2, Menu, CircleHelp, FolderPlus, Upload, Search, X, ArrowDownUp, ChevronDown, List, LayoutGrid, House, ChevronRight, ArrowDown, ArrowUp, Ellipsis, UploadCloud, RotateCcw, Download, FolderInput, Info, Check, CircleAlert, Eye, Pencil, Calendar, AArrowDown, Folder, Image, FileText, Sheet, Archive, Film, Music, FolderOpen, SearchX };
@@ -16,7 +17,7 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const icon = (name, cls = '') => `<i data-lucide="${name}" class="${cls}" aria-hidden="true"></i>`;
 const fmt = n => n >= 1073741824 ? `${(n/1073741824).toLocaleString('ru',{maximumFractionDigits:1})} ГБ` : n < 1024 ? `${n} Б` : n < 1048576 ? `${(n/1024).toLocaleString('ru',{maximumFractionDigits:1})} КБ` : `${(n/1048576).toLocaleString('ru',{maximumFractionDigits:1})} МБ`;
 const date = n => new Date(n).toLocaleDateString('ru', {day:'numeric',month:'short',year:'numeric'});
-let saving = false;
+let saving = false, uploadQueue;
 let db, entries = [], page = 'files', folder = null, selected = new Set(), preview = null, query = '', sort = 'name', ascending = true, view = 'list', urls = [];
 const uid = () => crypto.randomUUID();
 const active = () => entries.filter(x => !x.deleted);
@@ -40,13 +41,14 @@ async function init() {
     await persist(); if (!serverStorage) localStorage.setItem('cloud-initialized','1');
   }
   render();
+  if (serverStorage) uploadQueue = new UploadQueue(async()=>{ const data=await loadServer(); entries=data.entries; if(folder&&!get(folder))folder=null; render(); });
 }
 async function persist() {
   if (serverStorage) return saveServer(entries);
   await new Promise((resolve,reject) => { const tx = db.transaction('entries','readwrite'); const store = tx.objectStore('entries'); store.clear(); entries.forEach(e => store.put(e)); tx.oncomplete = resolve; tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error); });
 }
 async function change(fn, message) {
- if (serverStorage && saving) return toast('Дождитесь завершения сохранения или загрузки.');
+ if (serverStorage && (saving || uploadQueue?.active)) return toast('Дождитесь завершения сохранения или загрузки.');
  const before = structuredClone(entries); saving = true;
  try { fn(); render(); if (serverStorage) toast('Сохранение на сервере…'); await persist(); if(message) toast(message); }
  catch(e) { entries = before; render(); toast(serverStorage ? e.message : 'Не удалось сохранить. Возможно, хранилище браузера заполнено.',true); }
@@ -148,6 +150,7 @@ function uniqueName(name,parent) {let result=name,n=1;const dot=name.lastIndexOf
 async function upload(files) {
  if(page!=='files')return toast('Откройте «Мои файлы» для загрузки');
  if(!files.length)return;
+ if(serverStorage) { if(!uploadQueue||saving)return toast('Дождитесь сохранения.'); return uploadQueue.add(files,folder); }
  await change(()=>files.forEach(file=>entries.push({id:uid(),name:uniqueName(file.name,folder),kind:'file',parent:folder,modified:Date.now(),size:file.size,mime:file.type,blob:file})),`Загружено файлов: ${files.length}`);
 }
 function download(ids) {const files=ids.map(get).filter(e=>e?.blob||(serverStorage&&e?.kind==='file'));if(!files.length)return toast('Откройте папку и выберите файлы для скачивания');for(const e of files){const u=serverStorage?serverFile(e,true):URL.createObjectURL(e.blob),a=document.createElement('a');a.href=u;a.download=e.name;a.click();if(!serverStorage)setTimeout(()=>URL.revokeObjectURL(u),10000);}if(files.length<ids.length)toast('Скачаны файлы. Папки нужно открыть отдельно.');}

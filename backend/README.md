@@ -39,3 +39,34 @@ Run `python3 -m unittest discover -s backend -v` for API tests. For browser
 tests build with `VITE_SERVER_STORAGE=1 npm run build -- --base=/cloud/`, then
 run `npx playwright test --config deploy/server-playwright.config.js`.
 The test proxy token is test-only and never used by the production service.
+
+## Resumable upload queue
+
+The server reserves the full file size against the quota when a session starts.
+Content is sent in 4 MiB chunks, each verified against a client SHA-256 digest.
+Only flushed chunks whose offsets were committed to SQLite count as confirmed.
+Retries first query that offset; duplicate or out-of-order writes are rejected.
+The browser checks already confirmed chunk hashes against the reselected source
+before continuing. The final file appears in listings only after length and
+stored chunk integrity checks, atomic publication, and metadata commit.
+
+The frontend displays per-file and total progress, transfer speed, an approximate
+remaining time, and pause/resume/cancel controls. Three automatic retries handle
+short network errors; reconnecting after offline state resumes available sources.
+Closing the page stops transfer. Queue metadata is persisted in localStorage;
+files themselves are not copied there. Reselect the source files after reopening.
+Clearing browser data loses that saved queue. The beforeunload warning is subject
+to browser restrictions and is not a guarantee that closing can be prevented.
+
+Unfinished sessions expire after seven days without a confirmed chunk. They are
+cleaned on API access and hourly by the production backend. Cancelling an upload
+releases its reservation and removes its parts; cancellation tombstones prevent
+late create requests from resurrecting it. Cancelling after publication does not
+delete a completed file: use the normal trash workflow instead.
+
+Upgrade an existing deployment with `deploy/upgrade-uploads.sh FULL_COMMIT_SHA`.
+It snapshots SQLite metadata while the service is stopped, retains previous code
+links for rollback, and does not delete existing file data or change credentials.
+If the backend is absent, it uses the guarded first-install path. Finish existing
+legacy uploads before upgrading; the older whole-file protocol cannot resume a
+transfer that started before this version.

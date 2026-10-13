@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Single-owner file storage. Private Unix socket, authenticated nginx in front."""
 import hmac
+import hashlib
 import json
 import os
 import pathlib
@@ -32,11 +33,15 @@ class Store:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         self.files = self.root / 'files'
         self.files.mkdir(exist_ok=True, mode=0o700)
+        self.parts = self.root / 'uploads'
+        self.parts.mkdir(exist_ok=True, mode=0o700)
         self.token, self.quota, self.max_file, self.reserve = token, quota, max_file, reserve
         self.lock = threading.RLock()
         with self.connect() as db:
             db.execute('CREATE TABLE IF NOT EXISTS state (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, entries TEXT NOT NULL)')
             db.execute("INSERT OR IGNORE INTO state VALUES (1, 0, '[]')")
+            db.execute('CREATE TABLE IF NOT EXISTS uploads (id TEXT PRIMARY KEY, meta TEXT NOT NULL, total INTEGER NOT NULL, offset INTEGER NOT NULL, hashes TEXT NOT NULL, updated REAL NOT NULL)')
+            db.execute('CREATE TABLE IF NOT EXISTS cancelled_uploads (id TEXT PRIMARY KEY, updated REAL NOT NULL)')
 
     def connect(self):
         return sqlite3.connect(self.root / 'state.sqlite', timeout=30)
@@ -44,7 +49,7 @@ class Store:
     def state(self):
         with self.connect() as db:
             version, entries = db.execute('SELECT version, entries FROM state WHERE id=1').fetchone()
-        return {'version': version, 'entries': json.loads(entries), 'quota': self.quota, 'maxFile': self.max_file}
+        return {'version': version, 'entries': json.loads(entries), 'quota': self.quota, 'maxFile': self.max_file, 'chunkSize': 4*1024**2}
 
     def path(self, ident):
         if not ID.fullmatch(ident):
@@ -52,10 +57,121 @@ class Store:
         return self.files / ident
 
     def used(self):
-        return sum(p.stat().st_size for p in self.files.iterdir() if p.is_file())
+        with self.connect() as db:
+            pending = dict(db.execute('SELECT id, total FROM uploads'))
+        return sum(p.stat().st_size for p in self.files.iterdir() if p.is_file() and p.name not in pending) + sum(pending.values())
+
+    def cleanup_uploads(self):
+        live = {e['id'] for e in self.state()['entries']}
+        with self.connect() as db:
+            db.execute('DELETE FROM cancelled_uploads WHERE updated<?',(time.time()-7*86400,))
+            expired = list(db.execute('SELECT id FROM uploads WHERE updated<?', (time.time()-7*86400,)))
+            for (ident,) in expired:
+                (self.parts / ident).unlink(missing_ok=True)
+                if ident not in live: self.path(ident).unlink(missing_ok=True)
+                db.execute('DELETE FROM uploads WHERE id=?', (ident,))
+
+    def upload(self, ident):
+        self.path(ident)
+        existing = next((e for e in self.state()['entries'] if e['id']==ident), None)
+        if existing: return {'status':'done','offset':existing['size'],'entry':existing}
+        with self.connect() as db:
+            row = db.execute('SELECT meta,total,offset,hashes FROM uploads WHERE id=?',(ident,)).fetchone()
+        if not row: raise Problem(404, 'Upload expired or not found')
+        return {'status':'pending','meta':json.loads(row[0]),'total':row[1], 'offset':row[2], 'hashes':json.loads(row[3]), 'chunkSize':4*1024**2}
+
+    def create_upload(self, ident, meta):
+        self.cleanup_uploads()
+        self.path(ident)
+        with self.connect() as db:
+            if db.execute('SELECT 1 FROM cancelled_uploads WHERE id=?',(ident,)).fetchone(): raise Problem(410,'Upload cancelled; start a new upload')
+        try:
+            existing = self.upload(ident)
+            if existing['status']=='done': return existing
+            if existing['meta'] != meta: raise Problem(409, 'Upload identity changed')
+            return existing
+        except Problem as error:
+            if error.code!=404: raise
+        if not isinstance(meta,dict): raise Problem(400,'Invalid upload')
+        name, size, parent = meta.get('name'), meta.get('size'), meta.get('parent')
+        if not isinstance(name,str) or not name.strip() or len(name)>200 or re.search(r'[/\\\x00-\x1f\x7f]',name) or name in ('.','..'):
+            raise Problem(400,'Invalid name')
+        if type(size) is not int or size<0 or size>self.max_file: raise Problem(413,'File too large')
+        if not isinstance(meta.get('fingerprint'),str) or not re.fullmatch(r'[a-f0-9]{64}',meta['fingerprint']): raise Problem(400,'Invalid fingerprint')
+        entries = self.state()['entries']
+        if parent is not None and not any(e['id']==parent and e['kind']=='folder' and not e.get('deleted') for e in entries):
+            raise Problem(400,'Destination folder unavailable')
+        if self.used()+size>self.quota: raise Problem(413,'Storage quota exceeded')
+        if shutil.disk_usage(self.root).free-size<self.reserve: raise Problem(507,'Host disk reserve reached')
+        with self.connect() as db:
+            if db.execute('SELECT COUNT(*) FROM uploads').fetchone()[0]>=10000: raise Problem(413,'Too many pending uploads')
+            db.execute('INSERT INTO uploads VALUES (?,?,?,0,?,?)',(ident,json.dumps(meta),size,'[]',time.time()))
+        return self.upload(ident)
+
+    def append_upload(self, ident, offset, body, digest):
+        item=self.upload(ident)
+        if item['status']=='done': return item
+        if offset!=item['offset']: raise Problem(409,'Chunk offset changed; check upload status')
+        expected=min(4*1024**2,item['total']-offset)
+        if len(body)!=expected or not expected: raise Problem(400,'Invalid chunk length')
+        if not hmac.compare_digest(hashlib.sha256(body).hexdigest(),digest): raise Problem(400,'Chunk checksum mismatch')
+        if shutil.disk_usage(self.root).free-len(body)<self.reserve: raise Problem(507,'Host disk reserve reached')
+        path=self.parts/ident
+        with path.open('r+b' if path.exists() else 'w+b') as stream:
+            if os.fstat(stream.fileno()).st_size<offset: raise Problem(409,'Upload data missing; start a new upload')
+            stream.truncate(offset); stream.seek(offset); stream.write(body); stream.flush(); os.fsync(stream.fileno())
+        with self.connect() as db:
+            db.execute('UPDATE uploads SET offset=?,hashes=?,updated=? WHERE id=?',
+                       (offset+len(body),json.dumps(item['hashes']+[digest]),time.time(),ident))
+        return self.upload(ident)
+
+    def finish_upload(self, ident):
+        item=self.upload(ident)
+        if item['status']=='done': return item
+        if item['offset']!=item['total']: raise Problem(409,'Upload is incomplete')
+        path=self.parts/ident; final=self.path(ident)
+        if not path.exists() and final.exists(): path=final  # Retry after a crash between rename and SQLite commit.
+        if item['total']==0 and not path.exists(): path.touch(mode=0o600)
+        with path.open('rb') as stream:
+            for digest in item['hashes']:
+                if hashlib.sha256(stream.read(4*1024**2)).hexdigest()!=digest: raise Problem(409,'Stored chunk failed integrity check')
+            if stream.read(1) or path.stat().st_size!=item['total']: raise Problem(409,'Stored file length changed')
+        if path!=final: os.replace(path,final)
+        state=self.state(); meta=item['meta']; name=meta['name']; parent=meta.get('parent')
+        if parent is not None and not any(e['id']==parent and e['kind']=='folder' and not e.get('deleted') for e in state['entries']):
+            raise Problem(409,'Destination folder changed; restore it before retrying')
+        names={e['name'] for e in state['entries'] if e['parent']==parent and not e.get('deleted')}
+        base,ext=os.path.splitext(name); number=1
+        while name in names:
+            suffix=f' ({number})'; ending=ext[:max(0,200-len(suffix)-1)]
+            name=f'{base[:200-len(suffix)-len(ending)]}{suffix}{ending}'; number+=1
+        mime=meta.get('mime'); mime=mime if isinstance(mime,str) and mime in SAFE_TYPES else 'application/octet-stream'
+        entry={'id':ident,'name':name,'kind':'file','parent':parent,'modified':int(time.time()*1000),'size':item['total'],'mime':mime,'_stored':True}
+        state['entries'].append(entry)
+        directory=os.open(self.files,os.O_RDONLY)
+        try: os.fsync(directory)
+        finally: os.close(directory)
+        with self.connect() as db:
+            db.execute('UPDATE state SET version=?,entries=? WHERE id=1',(state['version']+1,json.dumps(state['entries'])))
+            db.execute('DELETE FROM uploads WHERE id=?',(ident,))
+        return {'status':'done','offset':item['total'],'entry':entry}
+
+    def cancel_upload(self, ident):
+        try: item=self.upload(ident)
+        except Problem as error:
+            if error.code!=404: raise
+            item={'status':'pending'}
+        if item['status']=='done': return item
+        (self.parts/ident).unlink(missing_ok=True)
+        self.path(ident).unlink(missing_ok=True)
+        with self.connect() as db:
+            db.execute('DELETE FROM uploads WHERE id=?',(ident,))
+            db.execute('INSERT OR REPLACE INTO cancelled_uploads VALUES (?,?)',(ident,time.time()))
+        return {'status':'cancelled'}
 
     def cleanup_staged(self):
         live = {e['id'] for e in self.state()['entries'] if e['kind'] == 'file'}
+        with self.connect() as db: live.update(ident for (ident,) in db.execute('SELECT id FROM uploads'))
         cutoff = time.time() - 24*3600
         for path in self.files.iterdir():
             if path.name not in live and path.stat().st_mtime < cutoff:
@@ -135,7 +251,7 @@ class Handler(BaseHTTPRequestHandler):
     def handle_request(self, write=False):
         try:
             store = self.server.store
-            if not hmac.compare_digest(self.headers.get('X-Cloud-Token', ''), store.token):
+            if not hmac.compare_digest(self.headers.get('X-Cloud-Token', '').encode(), store.token.encode()):
                 raise Problem(403, 'Forbidden')
             if write and self.headers.get('X-Cloud-Request') != '1':
                 raise Problem(403, 'Missing same-origin request header')
@@ -145,6 +261,29 @@ class Handler(BaseHTTPRequestHandler):
             path = parsed.path
             if not write and path == '/health':
                 return self.reply(200, {'ok': True})
+            if path.startswith('/uploads/'):
+                fields=path[len('/uploads/'):].split('/')
+                if len(fields)>2: raise Problem(404,'Not found')
+                ident=fields[0]; action=fields[1] if len(fields)==2 else ''
+                with store.lock:
+                    store.cleanup_uploads()
+                    if self.command=='DELETE' and not action: result=store.cancel_upload(ident)
+                    elif not write and not action: result=store.upload(ident)
+                    elif write and not action:
+                        length=self.length(4096)
+                        try: meta=json.loads(self.read_exact(length))
+                        except (ValueError,UnicodeError): raise Problem(400,'Invalid JSON')
+                        result=store.create_upload(ident,meta)
+                    elif write and action=='chunk':
+                        length=self.length(4*1024**2)
+                        offset=parse_qs(parsed.query).get('offset',[''])[0]
+                        if not offset.isdigit(): raise Problem(400,'Invalid offset')
+                        digest=self.headers.get('X-Chunk-SHA256','')
+                        if not re.fullmatch(r'[a-f0-9]{64}',digest): raise Problem(400,'Missing checksum')
+                        result=store.append_upload(ident,int(offset),self.read_exact(length),digest)
+                    elif write and action=='complete': result=store.finish_upload(ident)
+                    else: raise Problem(404,'Not found')
+                return self.reply(200,result)
             if path == '/state':
                 if not write: return self.reply(200, store.state())
                 length = self.length(4*1024**2)
@@ -243,6 +382,9 @@ class Handler(BaseHTTPRequestHandler):
 
     def do_GET(self): self.handle_request()
     def do_PUT(self): self.handle_request(write=True)
+    def do_DELETE(self):
+        if not urlsplit(self.path).path.startswith('/uploads/'): return self.reply(405,{'error':'Not allowed'})
+        self.handle_request(write=True)
 
 
 class UnixServer(ThreadingHTTPServer):
@@ -265,4 +407,14 @@ if __name__ == '__main__':
                          quota=int(os.environ.get('CLOUD_QUOTA', 20*1024**3)),
                          max_file=int(os.environ.get('CLOUD_MAX_FILE', 5*1024**3)))
     server.origin = os.environ.get('CLOUD_ORIGIN', 'https://hxry.ru')
+    def housekeeping():
+        while True:
+            try:
+                with server.store.lock:
+                    server.store.cleanup_uploads()
+                    server.store.cleanup_staged()
+            except Exception:
+                print('Cloud housekeeping failed; check storage availability', flush=True)
+            time.sleep(3600)
+    threading.Thread(target=housekeeping, daemon=True).start()
     server.serve_forever()

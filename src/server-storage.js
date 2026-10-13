@@ -3,15 +3,20 @@ const api = `${import.meta.env.BASE_URL}api/`;
 let version = 0;
 export let serverQuota = 20 * 1024 ** 3;
 export let serverMaxFile = 5 * 1024 ** 3;
-async function request(path, options = {}) {
-  const response = await fetch(api + path, { ...options, headers: { 'X-Cloud-Request': '1', ...options.headers } });
+export async function request(path, options = {}) {
+  let response;
+  try { response = await fetch(api + path, { ...options, headers: { 'X-Cloud-Request': '1', ...options.headers } }); }
+  catch(error) {
+    if(error.name==='AbortError')throw error;
+    const failure=new Error('Соединение прервано. Подтверждённые части сохранены на сервере.'); failure.network=true; throw failure;
+  }
   if (!response.ok) {
     let message = `Ошибка сервера (${response.status})`;
     try { const data = await response.json(); message = data.error || message; } catch {}
     if (response.status === 409) message = 'Хранилище изменилось в другой вкладке. Обновите страницу перед редактированием.';
     if (response.status === 413) message = 'Превышен лимит файла или объём хранилища.';
     if (response.status === 507) message = 'Недостаточно свободного места на сервере.';
-    throw new Error(message);
+    const error = new Error(message); error.status = response.status; throw error;
   }
   return response;
 }

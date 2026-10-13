@@ -1,4 +1,5 @@
 import http.client
+import hashlib
 import json
 import pathlib
 import socket
@@ -132,6 +133,67 @@ class StorageTests(unittest.TestCase):
         self.store.reserve=10**20
         self.assertEqual(self.request('PUT','/files/'+str(uuid.uuid4()),b'x')[0],507)
         self.assertEqual(self.store.used(),0)
+
+    def session(self, size, name='resumable.txt', parent=None):
+        self.store.quota=100*1024**2; self.store.max_file=10*1024**2
+        ident=str(uuid.uuid4())
+        meta={'name':name,'size':size,'parent':parent,'mime':'text/plain','fingerprint':'a'*64}
+        self.assertEqual(self.request('PUT','/uploads/'+ident,meta)[0],200)
+        return ident,meta
+
+    def chunk(self, ident, offset, content, digest=None):
+        return self.request('PUT',f'/uploads/{ident}/chunk?offset={offset}',content,
+                            {'X-Chunk-SHA256':digest or hashlib.sha256(content).hexdigest()})
+
+    def test_resume_restart_publish_and_idempotency(self):
+        chunk=b'x'*(4*1024**2); ident,meta=self.session(len(chunk)+5)
+        self.assertEqual(self.store.used(),len(chunk)+5)  # Full reservation, not just received bytes.
+        self.assertEqual(self.chunk(ident,0,chunk)[0],200)
+        self.assertEqual(self.request('GET','/files/'+ident)[0],404)
+        self.assertEqual(self.request('PUT','/uploads/'+ident+'/complete')[0],409)
+        self.server.store=Store(self.temp.name,'test-token',reserve=0)
+        self.assertEqual(json.loads(self.request('GET','/uploads/'+ident)[2])['offset'],len(chunk))
+        self.assertEqual(self.chunk(ident,0,chunk)[0],409)  # Lost response: do not append twice.
+        self.assertEqual(self.chunk(ident,len(chunk),b'hello')[0],200)
+        self.assertEqual(self.request('PUT','/uploads/'+ident+'/complete')[0],200)
+        version=self.server.store.state()['version']
+        self.assertEqual(self.request('PUT','/uploads/'+ident+'/complete')[0],200)
+        self.assertEqual(self.server.store.state()['version'],version)
+        self.assertEqual(self.request('GET','/files/'+ident,headers={'Range':f'bytes={len(chunk)}-'})[2],b'hello')
+
+    def test_bad_chunk_cancel_and_expiry(self):
+        ident,meta=self.session(5)
+        self.assertEqual(self.chunk(ident,0,b'hello','b'*64)[0],400)
+        self.assertEqual(self.chunk(ident,0,b'hel')[0],400)
+        self.assertEqual(json.loads(self.request('GET','/uploads/'+ident)[2])['offset'],0)
+        self.assertEqual(self.request('DELETE','/uploads/'+ident)[0],200)
+        self.assertEqual(self.store.used(),0)
+        self.assertEqual(self.request('PUT','/uploads/'+ident,meta)[0],410)
+        ident,meta=self.session(5)
+        self.assertEqual(self.chunk(ident,0,b'hello')[0],200)
+        with self.store.connect() as db: db.execute('UPDATE uploads SET updated=0 WHERE id=?',(ident,))
+        self.assertEqual(self.request('GET','/uploads/'+ident)[0],404)
+        self.assertFalse((self.store.parts/ident).exists())
+
+    def test_cancel_before_create_and_empty_file(self):
+        ident=str(uuid.uuid4())
+        self.assertEqual(self.request('DELETE','/uploads/'+ident)[0],200)
+        meta={'name':'a','size':0,'parent':None,'mime':'text/plain','fingerprint':'a'*64}
+        self.assertEqual(self.request('PUT','/uploads/'+ident,meta)[0],410)
+        ident,_=self.session(0)
+        self.assertEqual(self.request('PUT','/uploads/'+ident+'/complete')[0],200)
+        self.assertEqual(self.request('GET','/files/'+ident)[2],b'')
+
+    def test_partial_request_does_not_advance_offset(self):
+        ident,_=self.session(5)
+        connection=socket.create_connection(self.server.server_address)
+        headers=(f'PUT /uploads/{ident}/chunk?offset=0 HTTP/1.0\r\n'
+                 'X-Cloud-Token: test-token\r\nX-Cloud-Request: 1\r\nContent-Length: 5\r\n'
+                 f'X-Chunk-SHA256: {hashlib.sha256(b"hello").hexdigest()}\r\n\r\n')
+        connection.sendall(headers.encode()+b'he'); connection.shutdown(socket.SHUT_WR)
+        while connection.recv(4096): pass
+        connection.close()
+        self.assertEqual(json.loads(self.request('GET','/uploads/'+ident)[2])['offset'],0)
 
 
 if __name__ == '__main__': unittest.main()
