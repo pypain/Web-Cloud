@@ -110,3 +110,24 @@ test('profile customizations persist across browsers and respect reduced motion'
   await other.screenshot({path:'test-results/profile-mobile.png',fullPage:true});
   await context.close();
 });
+test('public sharing creates a download page and revoked links stop working',async({browser,page})=>{
+  await page.goto('/cloud/');
+  await page.locator('#file-input').setInputFiles({name:'share-test.txt',mimeType:'text/plain',buffer:Buffer.from('Shared file')});
+  await expect(page.locator('.upload-item').filter({hasText:'share-test.txt'})).toContainText('Загружен');
+  await page.getByRole('button',{name:'Убрать завершённые',exact:true}).click();
+  await page.getByLabel('Действия: share-test.txt',{exact:true}).click();
+  await page.getByRole('menuitem',{name:'Поделиться',exact:true}).click();
+  await page.getByLabel('Срок действия новой ссылки').selectOption('3600');
+  await page.getByRole('button',{name:'Создать ссылку',exact:true}).click();
+  const input=page.getByLabel('Ссылка на share-test.txt',{exact:true});
+  await expect(input).toBeVisible();const link=await input.inputValue();
+  const context=await browser.newContext();const recipient=await context.newPage();
+  await recipient.goto(link);await expect(recipient.getByRole('heading',{name:'share-test.txt'})).toBeVisible();
+  const download=recipient.waitForEvent('download');await recipient.getByRole('link',{name:'Скачать файл'}).click();
+  expect((await download).suggestedFilename()).toBe('share-test.txt');
+  await page.getByRole('button',{name:'Отозвать',exact:true}).click();
+  await expect(input).toHaveCount(0);
+  const response=await recipient.goto(link);expect(response.status()).toBe(404);
+  await expect(recipient.getByRole('heading',{name:'Ссылка недоступна'})).toBeVisible();
+  await context.close();
+});

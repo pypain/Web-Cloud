@@ -1,6 +1,6 @@
 import { profile, accents, loadProfile, saveProfile, avatarFromFile } from './profile.js';
 import { UploadQueue } from './upload-queue.js';
-import { serverStorage, serverQuota, loadServer, saveServer, serverFile, serverText } from './server-storage.js';
+import { serverStorage, serverQuota, loadServer, saveServer, serverFile, serverText, loadShares, createShare, revokeShare } from './server-storage.js';
 import { createIcons, Cloud, FolderClosed, Link, Trash2, HardDrive, ArrowUpRight, Settings2, Menu, CircleHelp, FolderPlus, Upload, Search, X, ArrowDownUp, ChevronDown, List, LayoutGrid, House, ChevronRight, ArrowDown, ArrowUp, Ellipsis, UploadCloud, RotateCcw, Download, FolderInput, Info, Check, CircleAlert, Eye, Pencil, Calendar, AArrowDown, Folder, Image, FileText, Sheet, Archive, Film, Music, FolderOpen, SearchX } from 'lucide';
 const icons = { Cloud, FolderClosed, Link, Trash2, HardDrive, ArrowUpRight, Settings2, Menu, CircleHelp, FolderPlus, Upload, Search, X, ArrowDownUp, ChevronDown, List, LayoutGrid, House, ChevronRight, ArrowDown, ArrowUp, Ellipsis, UploadCloud, RotateCcw, Download, FolderInput, Info, Check, CircleAlert, Eye, Pencil, Calendar, AArrowDown, Folder, Image, FileText, Sheet, Archive, Film, Music, FolderOpen, SearchX };
 import '@fontsource/manrope/cyrillic-400.css';
@@ -38,7 +38,7 @@ async function init() {
   if (!initialized && !entries.length) {
     const now = Date.now();
     entries = ['Документы','Фотографии','Проекты'].map(name => ({id:uid(),name,kind:'folder',parent:null,modified:now,size:0}));
-    const sample = new Blob([serverStorage ? 'Добро пожаловать в Личное облако!\n\nФайлы сохраняются на сервере и доступны с других устройств после входа. Публичные ссылки пока отключены.\n' : 'Добро пожаловать в Личное облако!\n\nЗагрузите файлы кнопкой «Загрузить» или перетащите их в окно.\nСоздавайте папки, перемещайте файлы и восстанавливайте их из корзины.\n\nЭта версия хранит данные в браузере на этом устройстве.\nДля доступа с других устройств и публичных ссылок нужен сервер.'],{type:'text/plain'});
+    const sample = new Blob([serverStorage ? 'Добро пожаловать в Личное облако!\n\nФайлы сохраняются на сервере и доступны с других устройств после входа. Через «Поделиться» можно создать ссылку с ограниченным сроком действия.\n' : 'Добро пожаловать в Личное облако!\n\nЗагрузите файлы кнопкой «Загрузить» или перетащите их в окно.\nСоздавайте папки, перемещайте файлы и восстанавливайте их из корзины.\n\nЭта версия хранит данные в браузере на этом устройстве.\nДля доступа с других устройств и публичных ссылок нужен сервер.'],{type:'text/plain'});
     entries.push({id:uid(),name:'Начните здесь.txt',kind:'file',parent:null,modified:now,size:sample.size,mime:sample.type,blob:sample});
     await persist(); if (!serverStorage) localStorage.setItem('cloud-initialized','1');
   }
@@ -63,7 +63,7 @@ function visible() {
 }
 function ancestors(id) { const path = []; let e = get(id); const seen = new Set(); while(e && !seen.has(e.id)) { path.unshift(e); seen.add(e.id); e = get(e.parent); } return path; }
 function descendant(id,parent) { return ancestors(id).some(e => e.id === parent); }
-function nav(p) { page=p; folder=null; selected.clear(); preview=null; query=''; render(); }
+function nav(p) { page=p; folder=null; selected.clear(); preview=null; query=''; render(); if(p==='links'&&serverStorage)loadShares().then(records=>{entries.forEach(e=>{if(records.some(r=>r.fileId===e.id&&r.active))e.shared=true;else delete e.shared;});if(page==='links')render();}).catch(error=>toast(error.message,true)); }
 function openFolder(id) { folder=id; page='files'; query=''; selected.clear(); preview=null; render(); }
 function avatarHTML(size='') {
  const initials=profile.name.trim().split(/\s+/).slice(0,2).map(word=>[...word][0]).join('').toLocaleUpperCase();
@@ -82,7 +82,7 @@ function render() {
     <div class="sidebar-shade" data-action="close-nav"></div>
     <main><header class="topbar"><button class="icon-button mobile-menu" data-action="menu" aria-label="Открыть навигацию">${icon('menu')}</button><div class="top-location">Пространство <span>/</span> <strong>${titles[page]}</strong></div><div class="top-right"><span class="local-tag"><span></span>${serverStorage?'На сервере':'На этом устройстве'}</span><button class="icon-button" data-action="help" aria-label="Помощь">${icon('circle-help')}</button><button class="avatar-button" data-action="settings" aria-label="Настроить профиль">${avatarHTML('small')}</button></div></header>
     <div class="content"><div class="page-heading"><div><div class="eyebrow">ВАШЕ ЛИЧНОЕ ОБЛАКО</div><h1>${esc(page==='files' && folder ? get(folder)?.name : titles[page])}</h1><p>${page==='files'?'Всё нужное — на своём месте.':page==='links'?'Файлы, которые вы подготовили для обмена.':'Удалённые файлы можно восстановить.'}</p></div><div class="heading-actions">${page==='files'?`<button class="button secondary" data-action="new-folder">${icon('folder-plus')}<span>Новая папка</span></button><button class="button primary" data-action="upload">${icon('upload')}<span>Загрузить файлы</span></button>`:page==='trash'?`<button class="button secondary danger" data-action="empty-trash" ${list.length?'':'disabled'}>${icon('trash-2')}Очистить корзину</button>`:''}</div></div>
-    ${page==='links'?`<div class="notice">${icon('info')}<span>${serverStorage?'Публичные ссылки отключены. Этот список виден только после входа.':'Публичные ссылки появятся после подключения сервера. Здесь можно подготовить список файлов для обмена.'}</span></div>`:''}
+    ${page==='links'?`<div class="notice">${icon('info')}<span>${serverStorage?'Здесь файлы с действующими публичными ссылками. Управляйте доступом через «Поделиться».':'Публичные ссылки появятся после подключения сервера. Здесь можно подготовить список файлов для обмена.'}</span></div>`:''}
     <div class="file-toolbar"><label class="search">${icon('search')}<input id="search" placeholder="Поиск файлов и папок" aria-label="Поиск файлов и папок" value="${esc(query)}" autocomplete="off">${query?`<button class="icon-button" data-action="clear-search" aria-label="Очистить поиск">${icon('x')}</button>`:`<kbd>/</kbd>`}</label><div class="toolbar-right"><button class="sort-button" data-action="sort">${icon('arrow-down-up')}<span>${sort==='name'?'По названию':sort==='size'?'По размеру':'По дате'}</span>${icon('chevron-down')}</button><div class="view-toggle"><button class="icon-button ${view==='list'?'on':''}" data-view="list" aria-label="Список" aria-pressed="${view==='list'}">${icon('list')}</button><button class="icon-button ${view==='grid'?'on':''}" data-view="grid" aria-label="Плитки" aria-pressed="${view==='grid'}">${icon('layout-grid')}</button></div></div></div>
     <div class="breadcrumb"><button data-folder="">${icon('house')}<span>${page==='files'?'Все файлы':titles[page]}</span></button>${page==='files'?ancestors(folder).map(e=>`${icon('chevron-right')}<button data-folder="${e.id}">${esc(e.name)}</button>`).join(''):''}<span class="item-count">${list.length} ${plural(list.length,'элемент','элемента','элементов')}${query?' найдено':''}</span></div>
     <div class="files-area ${animateView?'view-enter':''} ${p?'with-preview':''}"><section class="file-panel" aria-label="Файлы"><div class="table-head"><label class="check"><input type="checkbox" id="select-all" aria-label="Выбрать все файлы" ${list.length&&list.every(e=>selected.has(e.id))?'checked':''}></label><button data-sort="name">Название ${icon(sort==='name'&&!ascending?'arrow-down':'arrow-up')}</button><button class="size-col" data-sort="size">Размер</button><button class="date-col" data-sort="modified">Изменено</button><span></span></div><div class="file-items ${view}">${list.map(e=>`<div class="file-row ${selected.has(e.id)?'selected':''} ${preview===e.id?'previewed':''}" data-id="${e.id}" tabindex="0" role="group" aria-label="${esc(e.name)}"><label class="check"><input type="checkbox" data-select="${e.id}" aria-label="Выбрать ${esc(e.name)}" ${selected.has(e.id)?'checked':''}></label><button class="file-name" data-open="${e.id}">${fileIcon(e)}<span class="file-label">${esc(e.name)}<small>${e.kind==='folder'?'Папка':fmt(e.size)}</small></span>${e.shared?icon('link','shared-mark'):''}</button><span class="size-col">${e.kind==='folder'?'—':fmt(e.size)}</span><span class="date-col">${date(e.modified)}</span><button class="icon-button row-more" data-more="${e.id}" aria-label="Действия: ${esc(e.name)}">${icon('ellipsis')}</button></div>`).join('')||`<div class="empty">${icon(query?'search-x':page==='trash'?'trash-2':page==='links'?'link':'folder-open')}<h2>${query?'Ничего не найдено':page==='trash'?'Корзина пуста':page==='links'?'Пока нет файлов для обмена':'Здесь пока пусто'}</h2><p>${query?'Попробуйте другое название.':page==='trash'?'Удалённые файлы появятся здесь.':page==='links'?'Выберите файл и нажмите «Поделиться».':'Загрузите файлы или создайте первую папку.'}</p>${page==='files'&&!query?'<button class="button secondary" data-action="upload">Загрузить файлы</button>':''}</div>`}</div><div class="drop-hint">${icon('upload-cloud')}<span>Перетащите файлы сюда для загрузки</span></div></section>${p?previewHTML(p):''}</div>
@@ -139,10 +139,10 @@ function action(a,event) {
  if(['help','storage'].includes(a))infoDialog(a);
 }
 function toast(message,error=false) {const root=$('#toast-root');root.innerHTML=`<div class="toast ${error?'error':''}">${icon(error?'circle-alert':'check')}${esc(message)}</div>`;createIcons({icons});setTimeout(()=>{if(!saving)root.replaceChildren();},4500);}
-function modal(title,body,buttons,setup) {
+function modal(title,body,buttons,setup,onClose) {
  const previous=document.activeElement;
  $('#overlay-root').innerHTML=`<div class="modal-backdrop"><section class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-title"><div class="modal-heading"><h2 id="modal-title">${title}</h2><button class="icon-button" data-close aria-label="Закрыть">${icon('x')}</button></div><div class="modal-body">${body}</div><div class="modal-actions">${buttons}</div></section></div>`;
- const close=()=>{$('#overlay-root').replaceChildren();previous?.focus();};
+ const close=()=>{$('#overlay-root').replaceChildren();previous?.focus();onClose?.();};
  document.querySelectorAll('[data-close]').forEach(b=>b.onclick=close);
  $('.modal-backdrop').onclick=e=>{if(e.target===e.currentTarget)close();};
  $('.modal').onkeydown=e=>{if(e.key==='Escape')close();if(e.key==='Tab'){const els=[...$('.modal').querySelectorAll('button:not(:disabled),input,select,a[href]')];const first=els[0],last=els.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}};
@@ -171,8 +171,40 @@ function moveDialog(ids) {
  modal('Переместить',`<p>Выберите папку назначения.</p><label class="field-label" for="destination">Папка</label><select class="text-input" id="destination"><option value="">Все файлы</option>${folders.map(e=>`<option value="${e.id}">${esc(ancestors(e.id).map(x=>x.name).join(' / '))}</option>`).join('')}</select><p class="form-error" id="move-error"></p>`,`<button class="button secondary" data-close>Отмена</button><button class="button primary" id="confirm-move">Переместить</button>`,close=>{$('#confirm-move').onclick=()=>{const dest=$('#destination').value||null;const moving=ids.map(get).filter(e=>e&&!ids.some(id=>id!==e.id&&descendant(e.id,id)));if(moving.some(e=>active().some(x=>x.parent===dest&&x.name===e.name&&x.id!==e.id)))return $('#move-error').textContent='В папке назначения уже есть элемент с таким названием.';close();change(()=>{moving.forEach(e=>{e.parent=dest;e.modified=Date.now();});selected.clear();},'Перемещено');};});
 }
 function share(ids) {
+ if(serverStorage)return publicShareDialog(ids);
  const items=ids.map(get).filter(Boolean),allShared=items.every(e=>e.shared);
  modal('Поделиться',`<div class="dialog-symbol">${icon('link')}</div><p><strong>${items.length===1?esc(items[0].name):`Выбрано элементов: ${items.length}`}</strong></p><p>${serverStorage?'Файлы хранятся на сервере за вашим паролем. Публичные ссылки в этой версии отключены.':'Сейчас файлы находятся только в этом браузере. Публичную ссылку можно будет создать после подключения серверного хранилища.'}</p><p>Пока можно ${allShared?'убрать их из':'добавить их в'} раздел «Общие ссылки» или скачать файл и отправить его самостоятельно.</p>`,`<button class="button secondary" data-close>Закрыть</button><button class="button primary" id="prepare-share">${allShared?'Убрать из списка':'Подготовить к обмену'}</button>`,close=>{$('#prepare-share').onclick=()=>{close();change(()=>items.forEach(e=>e.shared=!allShared),allShared?'Убрано из общих ссылок':'Добавлено в общие ссылки');};});
+}
+async function publicShareDialog(ids) {
+ const items=ids.map(get).filter(e=>e?.kind==='file'&&!e.deleted);
+ if(!items.length)return toast('Выберите файл. Публичные ссылки на папки пока не поддерживаются.');
+ if(items.length!==ids.length)toast('Ссылки будут созданы только для выбранных файлов.');
+ let records;
+ try {records=await loadShares();}catch(error){return toast(error.message,true);}
+ modal('Поделиться файлом',`<div class="dialog-symbol">${icon('link')}</div><p><strong>${items.length===1?esc(items[0].name):`Файлов: ${items.length}`}</strong></p><p>Любой, у кого есть ссылка, сможет скачать выбранный файл без входа. Остальное облако останется закрытым.</p><label class="field-label" for="share-lifetime">Срок действия новой ссылки</label><select class="text-input" id="share-lifetime"><option value="3600">1 час</option><option value="86400">1 день</option><option value="604800" selected>7 дней</option><option value="2592000">30 дней</option></select><div id="public-share-list" class="public-share-list"></div><p id="share-error" class="form-error" role="alert"></p>`,`<button class="button secondary" data-close>Закрыть</button><button class="button primary" id="create-public-share">Создать ${items.length===1?'ссылку':'ссылки'}</button>`,close=>{
+  const paint=()=>{
+   const root=$('#public-share-list');if(!root)return;
+   const selected=records.filter(record=>items.some(e=>e.id===record.fileId));
+   root.innerHTML=selected.map(record=>{const file=items.find(e=>e.id===record.fileId),url=new URL(record.path,location.origin).href;return `<article class="public-share-card"><strong>${esc(file.name)}</strong><small>${record.active?'Действует до':'Истекла'} ${esc(new Date(record.expires*1000).toLocaleString('ru'))}</small>${record.active?`<input class="text-input" readonly value="${esc(url)}" aria-label="Ссылка на ${esc(file.name)}"><div><button class="button secondary" data-copy-share="${record.id}">Копировать</button><button class="button secondary danger" data-revoke-share="${record.id}">Отозвать</button></div>`:`<button class="button secondary" data-revoke-share="${record.id}">Убрать ссылку</button>`}</article>`;}).join('')||'<p class="profile-note">Публичных ссылок для этих файлов пока нет.</p>';
+   root.querySelectorAll('[data-copy-share]').forEach(button=>button.onclick=async()=>{
+    const record=records.find(record=>record.id===button.dataset.copyShare),url=new URL(record.path,location.origin).href;
+    try{await navigator.clipboard.writeText(url);button.textContent='Скопировано';}
+    catch{const input=button.closest('article').querySelector('input');input.focus();input.select();$('#share-error').textContent='Скопируйте выделенную ссылку вручную.';}
+   });
+   root.querySelectorAll('[data-revoke-share]').forEach(button=>button.onclick=async()=>{
+    button.disabled=true;
+    try{await revokeShare(button.dataset.revokeShare);records=await loadShares();items.forEach(e=>e.shared=records.some(record=>record.fileId===e.id&&record.active));paint();}
+    catch(error){if($('#share-error'))$('#share-error').textContent=error.message;if(button.isConnected)button.disabled=false;}
+   });
+  };
+  paint();
+  $('#create-public-share').onclick=async()=>{
+   const button=$('#create-public-share'),ttl=Number($('#share-lifetime').value);button.disabled=true;$('#share-error').textContent='';
+   try{for(const item of items){const record=await createShare(item.id,ttl);records.unshift(record);item.shared=true;paint();}}
+   catch(error){if($('#share-error'))$('#share-error').textContent=error.message;}
+   finally{if(button.isConnected)button.disabled=false;}
+  };
+ },()=>render());
 }
 function profileDialog() {
  const draft={...profile};

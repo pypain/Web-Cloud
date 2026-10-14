@@ -16,7 +16,7 @@ their contents. Uncommitted uploads older than 24 hours are reclaimed before
 the next upload. Conflicting metadata writes return 409 rather than silently
 overwriting edits made on another device. Refresh to obtain updated listings.
 
-Public sharing is intentionally unavailable. Unknown or executable MIME types
+Public sharing is scoped to individual files with expiring capability links. Unknown or executable MIME types
 download as attachments, with nosniff and a sandbox policy. File IDs are UUIDs;
 user-supplied names never become filesystem paths. Metadata validates parent
 folders, duplicate names and cycles. This is a private initial implementation,
@@ -88,3 +88,24 @@ multi-user account. Existing HTTP Basic credentials remain unchanged.
 Appearance settings are applied on page load across devices. System
 `prefers-reduced-motion` overrides the profile's animation preference. Navigation
 animations are limited to view changes, avoiding replay while typing a search.
+
+## Public file links
+
+Owners create links from the private `/shares` API with 1-hour, 1-day, 7-day
+or 30-day expiry. Tokens use 32 random bytes and are stored in private SQLite
+so owners can copy links again on another device. Treat metadata backups as
+confidential. Anyone holding a link can download its selected file until it
+expires or is revoked; possession is the authorization, not a separate account.
+
+Only `/cloud/share/` bypasses nginx Basic authentication. It forwards a public
+isolation marker; the backend rejects public requests to every other API path
+and rejects mutations. Public content downloads as an attachment, with nosniff,
+sandbox, no-store and no-referrer headers. Access logging is disabled for this
+location. The landing page contains only the shared filename, size and expiry.
+Public recipient pages do not include analytics or other external resources.
+
+Revocation blocks new requests; an already-open download can finish. Moving a
+file or its ancestor into trash deletes its links, so restoring the file does
+not reactivate old access. Missing, expired and revoked links return a generic
+404 page. The upgrade script preserves the private snippet and adds only the
+public prefix plus a private API isolation header, with nginx test and rollback.

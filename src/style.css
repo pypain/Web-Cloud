@@ -17,3 +17,4 @@ html[data-motion="off"] *,html[data-motion="off"] *::before,html[data-motion="of
 
 html[data-motion="off"] .button:hover,html[data-motion="off"] .button:active{transform:none}
 @media(prefers-reduced-motion:reduce){.button:hover,.button:active{transform:none}}
+.public-share-list{display:grid;gap:12px;margin-top:18px}.public-share-card{display:grid;gap:8px;border:1px solid var(--line);border-radius:10px;padding:14px;overflow-wrap:anywhere;background:var(--panel)}.public-share-card small{color:var(--muted)}.public-share-card>div{display:flex;gap:8px;flex-wrap:wrap}.public-share-card input{font-size:11px;width:100%;min-width:0}

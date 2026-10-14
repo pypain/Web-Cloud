@@ -23,8 +23,13 @@ export async function request(path, options = {}) {
 export async function loadServer() {
   const data = await (await request('state')).json();
   version = data.version; serverQuota = data.quota; serverMaxFile = data.maxFile;
+  const shares=await loadShares();
+  for(const entry of data.entries) { if(shares.some(link=>link.fileId===entry.id&&link.active))entry.shared=true;else delete entry.shared; }
   return data;
 }
+export async function loadShares() { return (await (await request('shares')).json()).shares; }
+export async function createShare(fileId,ttl) { return (await request(`shares/${crypto.randomUUID()}`,{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({fileId,ttl})})).json(); }
+export async function revokeShare(id) { await request(`shares/${id}`,{method:'DELETE'}); }
 export async function saveServer(entries) {
   for (const entry of entries) {
     if (entry.kind === 'file' && entry.blob && !entry._stored) {

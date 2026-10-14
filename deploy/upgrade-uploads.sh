@@ -23,8 +23,10 @@ backup=$(mktemp -d /root/hxry-upload-upgrade-XXXXXXXX)
 chmod 700 "$backup"
 curl -fSL "$url/backend/server.py" -o "$backup/server.py"
 curl -fSL "$url/deploy/server-dist.tar.gz" -o "$backup/server-dist.tar.gz"
-printf '%s  %s\n' 'e07a784b2eb283fd2532b9430685fa14a82085ef283726f27a6fbc7cdfae868d' "$backup/server.py" | sha256sum -c -
-printf '%s  %s\n' '4b577e8200f5d49161bc9f64dace884a87b90c17f714201759d01a9cd73e4e3c' "$backup/server-dist.tar.gz" | sha256sum -c -
+curl -fSL "$url/deploy/public-shares.conf" -o "$backup/public-shares.conf"
+cp -p /etc/nginx/snippets/hxry-cloud.conf "$backup/snippet.conf"
+printf '%s  %s\n' 'f8e362f479aef7220e37b5ec427cdab943e7c4761a704ec64dacb2f2e4d8c28e' "$backup/server.py" | sha256sum -c -
+printf '%s  %s\n' 'f7536094b20d440d6e4025eb4c6303db87e52c13ad49753e942b69a65ad299f5' "$backup/server-dist.tar.gz" | sha256sum -c -
 python3 - "$backup/server-dist.tar.gz" <<'PY'
 import pathlib,sys,tarfile
 with tarfile.open(sys.argv[1]) as archive:
@@ -39,6 +41,19 @@ import pathlib,sys
 token=pathlib.Path('/etc/hxry-cloud/backend-token').read_text().strip()
 assert len(token)==64 and all(c in '0123456789abcdef' for c in token)
 (pathlib.Path(sys.argv[1])/'curl.conf').write_text('header = "X-Cloud-Token: '+token+'"\n')
+root=pathlib.Path(sys.argv[1]);text=(root/'snippet.conf').read_text()
+assert 'location ^~ /cloud/api/' in text
+if 'location ^~ /cloud/share/' not in text:
+    public=(root/'public-shares.conf').read_text().replace('__BACKEND_TOKEN__',token)
+    text=public+'\n'+text
+    marker='    proxy_set_header X-Cloud-Token "'+token+'";'
+    # Only the private API block receives an explicit isolation header.
+    start=text.index('location ^~ /cloud/api/');tail=text[start:]
+    assert marker in tail
+    if 'X-Cloud-Public "0"' not in tail:
+        tail=tail.replace(marker,marker+'\n    proxy_set_header X-Cloud-Public "0";',1)
+    text=text[:start]+tail
+(root/'new-snippet.conf').write_text(text)
 PY
 cat > "$backup/restore.sh" <<'RESTORE'
 #!/usr/bin/env bash
@@ -51,6 +66,9 @@ for name in ui backend; do
   ln -s "$target" "$root/rollback-link"
   mv -Tf "$root/rollback-link" "$root/current"
 done
+cp -p "$dir/snippet.conf" /etc/nginx/snippets/hxry-cloud.conf
+nginx -t
+systemctl reload nginx
 systemctl restart hxry-cloud
 echo 'Previous cloud code restored. File data and SQLite metadata retained.'
 RESTORE
@@ -90,6 +108,24 @@ assert before==after['entries'],'Committed file metadata changed unexpectedly'
 assert after['chunkSize']==4194304
 print('Existing metadata preserved; new upload protocol ready')
 PY
+install -m 640 -o root -g www-data "$backup/new-snippet.conf" /etc/nginx/snippets/hxry-cloud.conf
+nginx -t
+systemctl reload nginx
+python3 - <<'PY'
+import subprocess,time
+deadline=time.monotonic()+25
+while True:
+    p=subprocess.run(['curl','--noproxy','*','--resolve','hxry.ru:443:127.0.0.1','--connect-timeout','3','--max-time','4',
+                      '-sS','-D','-','-o','/dev/null','-w','%{http_code}',
+                      'https://hxry.ru/cloud/share/'+'A'*43],capture_output=True,text=True,timeout=6)
+    if p.returncode==0 and p.stdout.strip().endswith('404') and 'x-cloud-share: public' in p.stdout.lower():break
+    if time.monotonic()>=deadline:raise SystemExit('Public share route did not become ready')
+    time.sleep(.5)
+PY
+for endpoint in /cloud/ /cloud/api/state; do
+  code=$(curl --noproxy '*' --resolve hxry.ru:443:127.0.0.1 -sS --max-time 15 -o /dev/null -w '%{http_code}' "https://hxry.ru$endpoint")
+  [[ $code == 401 ]] || { echo "Private route $endpoint is not protected ($code)"; false; }
+done
 curl --noproxy '*' --resolve hxry.ru:443:127.0.0.1 --user cloudadmin -fsS --max-time 15 https://hxry.ru/cloud/api/state > "$backup/authenticated.json"
 python3 - "$backup/authenticated.json" <<'PY'
 import json,pathlib,sys

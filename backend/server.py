@@ -4,6 +4,8 @@ import hmac
 import hashlib
 import base64
 import struct
+import secrets
+import html
 import json
 import os
 import pathlib
@@ -46,6 +48,7 @@ class Store:
             db.execute('CREATE TABLE IF NOT EXISTS cancelled_uploads (id TEXT PRIMARY KEY, updated REAL NOT NULL)')
             db.execute('CREATE TABLE IF NOT EXISTS profile (id INTEGER PRIMARY KEY CHECK(id=1), version INTEGER NOT NULL, settings TEXT NOT NULL)')
             db.execute('INSERT OR IGNORE INTO profile VALUES (1,0,?)',(json.dumps({'name':'Личное пространство','bio':'','accent':'violet','motion':True,'avatar':''}),))
+            db.execute('CREATE TABLE IF NOT EXISTS shares (id TEXT PRIMARY KEY, token TEXT UNIQUE NOT NULL, file_id TEXT NOT NULL, expires INTEGER NOT NULL)')
 
     def connect(self):
         return sqlite3.connect(self.root / 'state.sqlite', timeout=30)
@@ -59,6 +62,24 @@ class Store:
         if not ID.fullmatch(ident):
             raise Problem(400, 'Invalid file ID')
         return self.files / ident
+
+    def visible_file(self, ident, entries=None):
+        entries=self.state()['entries'] if entries is None else entries
+        by_id={e['id']:e for e in entries}; entry=by_id.get(ident); cursor=entry
+        if not entry or entry['kind']!='file': return None
+        while cursor:
+            if cursor.get('deleted'): return None
+            cursor=by_id.get(cursor['parent'])
+        return entry
+
+    def share_records(self):
+        with self.connect() as db: rows=list(db.execute('SELECT id,token,file_id,expires FROM shares ORDER BY expires DESC'))
+        entries=self.state()['entries'];visibility={}
+        for _,_,file_id,_ in rows:
+            if file_id not in visibility:visibility[file_id]=bool(self.visible_file(file_id,entries))
+        return [{'id':ident,'fileId':file_id,'path':'/cloud/share/'+token,'expires':expires,
+                 'active':expires>time.time() and visibility[file_id]}
+                for ident,token,file_id,expires in rows]
 
     def used(self):
         with self.connect() as db:
@@ -261,6 +282,19 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def public_page(self, code, title, details='', download=''):
+        link=f'<a href="{html.escape(download,quote=True)}">Скачать файл</a>' if download else ''
+        body=(f'<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+              f'<title>{html.escape(title)} · Облако</title><style>body{{margin:0;background:#17181d;color:#eee;font:16px system-ui;display:grid;place-items:center;min-height:100vh}}'
+              f'main{{max-width:480px;margin:20px;padding:36px;background:#22232c;border:1px solid #48404f;border-radius:18px;overflow-wrap:anywhere}}'
+              f'p{{color:#aaa;line-height:1.6}}a{{display:inline-block;background:#b29af8;color:#211b30;padding:13px 24px;border-radius:9px;text-decoration:none;font-weight:600}}</style>'
+              f'<main><p>Личное облако · файл по ссылке</p><h1>{html.escape(title)}</h1><p>{html.escape(details)}</p>{link}</main></html>').encode()
+        self.send_response(code);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(body)))
+        self.send_header('Cache-Control','no-store');self.send_header('Referrer-Policy','no-referrer');self.send_header('X-Robots-Tag','noindex, nofollow')
+        self.send_header('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+        self.end_headers()
+        if self.command!='HEAD': self.wfile.write(body)
+
     def handle_request(self, write=False):
         try:
             store = self.server.store
@@ -272,6 +306,41 @@ class Handler(BaseHTTPRequestHandler):
                 raise Problem(403, 'Wrong request origin')
             parsed = urlsplit(self.path)
             path = parsed.path
+            share_token=None
+            public=self.headers.get('X-Cloud-Public')=='1'
+            if public and (write or not path.startswith('/share/')): raise Problem(403,'Forbidden')
+            if path.startswith('/share/'):
+                if write: raise Problem(405,'Not allowed')
+                fields=path[len('/share/'):].split('/')
+                if len(fields)>2 or (len(fields)==2 and fields[1]!='download') or not re.fullmatch(r'[A-Za-z0-9_-]{43}',fields[0]): raise Problem(404,'Link unavailable')
+                with store.lock, store.connect() as db:
+                    row=db.execute('SELECT file_id,expires FROM shares WHERE token=?',(fields[0],)).fetchone()
+                    entry=store.visible_file(row[0]) if row and row[1]>time.time() else None
+                    if not entry or not store.path(entry['id']).is_file(): raise Problem(404,'Link unavailable')
+                    if len(fields)==1:
+                        return self.public_page(200,entry['name'],f"Размер: {entry['size']:,} байт. Ссылка действует до {time.strftime('%d.%m.%Y %H:%M UTC',time.gmtime(row[1]))}.",'/cloud/share/'+fields[0]+'/download')
+                    share_token=fields[0]
+                path='/files/'+entry['id'];parsed=parsed._replace(query='download=1')
+            if path=='/shares' or path.startswith('/shares/'):
+                if path=='/shares' and not write: return self.reply(200,{'shares':store.share_records()})
+                ident=path[len('/shares/'):]
+                if not ID.fullmatch(ident): raise Problem(400,'Invalid share ID')
+                if self.command=='DELETE':
+                    with store.lock, store.connect() as db: db.execute('DELETE FROM shares WHERE id=?',(ident,))
+                    return self.reply(200,{'ok':True})
+                with store.lock, store.connect() as db:
+                    if not write: raise Problem(404,'Not found')
+                    try: data=json.loads(self.read_exact(self.length(4096)))
+                    except (ValueError,UnicodeError): raise Problem(400,'Invalid share request')
+                    if not isinstance(data,dict) or type(data.get('ttl')) is not int or data['ttl'] not in (3600,86400,604800,2592000): raise Problem(400,'Invalid share lifetime')
+                    file_id=data.get('fileId')
+                    if not isinstance(file_id,str) or not store.visible_file(file_id): raise Problem(404,'File unavailable')
+                    existing=db.execute('SELECT file_id FROM shares WHERE id=?',(ident,)).fetchone()
+                    if existing and existing[0]!=file_id: raise Problem(409,'Share ID already used')
+                    if not existing:
+                        if db.execute('SELECT COUNT(*) FROM shares').fetchone()[0]>=10000: raise Problem(413,'Too many links')
+                        db.execute('INSERT INTO shares VALUES (?,?,?,?)',(ident,secrets.token_urlsafe(32),file_id,int(time.time())+data['ttl']))
+                return self.reply(200,next(s for s in store.share_records() if s['id']==ident))
             if not write and path == '/health':
                 return self.reply(200, {'ok': True})
             if path=='/profile':
@@ -336,6 +405,8 @@ class Handler(BaseHTTPRequestHandler):
                     with store.connect() as db:
                         db.execute('UPDATE state SET version=?, entries=? WHERE id=1',
                                    (old['version']+1, json.dumps(entries)))
+                        for (share_id,file_id) in db.execute('SELECT id,file_id FROM shares').fetchall():
+                            if not store.visible_file(file_id,entries): db.execute('DELETE FROM shares WHERE id=?',(share_id,))
                     live = {e['id'] for e in entries if e['kind'] == 'file'}
                     # Remove only previously committed files deleted in this change.
                     for e in old['entries']:
@@ -366,7 +437,10 @@ class Handler(BaseHTTPRequestHandler):
                             pathlib.Path(temporary).unlink(missing_ok=True)
                     return self.reply(201, {'id': ident})
                 with store.lock:
-                    entry = next((e for e in store.state()['entries'] if e['id'] == ident and e['kind'] == 'file'), None)
+                    if share_token:
+                        with store.connect() as db: active_share=db.execute('SELECT file_id,expires FROM shares WHERE token=?',(share_token,)).fetchone()
+                        entry=store.visible_file(ident) if active_share and active_share[0]==ident and active_share[1]>time.time() else None
+                    else: entry = next((e for e in store.state()['entries'] if e['id'] == ident and e['kind'] == 'file'), None)
                     if entry is None or not file.is_file(): raise Problem(404, 'File not found')
                     stream = file.open('rb')
                 with stream:
@@ -386,10 +460,12 @@ class Handler(BaseHTTPRequestHandler):
                     self.send_header('Cache-Control', 'no-store')
                     self.send_header('X-Content-Type-Options', 'nosniff')
                     self.send_header('Content-Security-Policy', 'sandbox')
+                    self.send_header('Referrer-Policy','no-referrer')
                     disposition = 'attachment' if 'download' in parse_qs(parsed.query) or entry['mime'] == 'application/octet-stream' else 'inline'
                     self.send_header('Content-Disposition', f"{disposition}; filename*=UTF-8''{quote(entry['name'], safe='')}")
                     if code == 206: self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
                     self.end_headers()
+                    if self.command=='HEAD': return
                     stream.seek(start); remaining = max(0, end-start+1)
                     while remaining:
                         chunk = stream.read(min(remaining, 1024*1024))
@@ -398,7 +474,8 @@ class Handler(BaseHTTPRequestHandler):
                 return
             raise Problem(404, 'Not found')
         except Problem as error:
-            self.reply(error.code, {'error': error.message})
+            if self.headers.get('X-Cloud-Public')=='1': self.public_page(error.code,'Ссылка недоступна','Срок действия истёк, файл удалён или владелец отозвал доступ.')
+            else: self.reply(error.code, {'error': error.message})
         except (BrokenPipeError, ConnectionResetError, TimeoutError):
             pass
         except Exception:
@@ -418,9 +495,12 @@ class Handler(BaseHTTPRequestHandler):
         return body
 
     def do_GET(self): self.handle_request()
+    def do_HEAD(self):
+        if not urlsplit(self.path).path.startswith('/share/'): return self.reply(405,{'error':'Not allowed'})
+        self.handle_request()
     def do_PUT(self): self.handle_request(write=True)
     def do_DELETE(self):
-        if not urlsplit(self.path).path.startswith('/uploads/'): return self.reply(405,{'error':'Not allowed'})
+        if not urlsplit(self.path).path.startswith(('/uploads/','/shares/')): return self.reply(405,{'error':'Not allowed'})
         self.handle_request(write=True)
 
 

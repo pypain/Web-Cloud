@@ -233,5 +233,41 @@ class StorageTests(unittest.TestCase):
             self.assertEqual(self.request('PUT','/profile',{'version':1,'profile':{**settings,**bad}})[0],400)
         self.assertEqual(self.request('GET','/profile',auth=False)[0],403)
 
+    def test_public_share_download_revoke_and_isolation(self):
+        e=self.entry(name='<private>.txt');self.save([e])
+        ident=str(uuid.uuid4())
+        response=self.request('PUT','/shares/'+ident,{'fileId':e['id'],'ttl':3600})
+        self.assertEqual(response[0],200)
+        record=json.loads(response[2]);path=record['path'].replace('/cloud/share/','/share/')
+        public={'X-Cloud-Public':'1'}
+        self.assertEqual(self.request('GET',path,headers=public,auth=False)[0],403)
+        page=self.request('GET',path,headers=public)
+        self.assertEqual(page[0],200)
+        self.assertIn(b'&lt;private&gt;.txt',page[2])
+        self.assertNotIn(b'<private>',page[2])
+        downloaded=self.request('GET',path+'/download',headers=public)
+        self.assertEqual(downloaded[2],b'hello world')
+        self.assertTrue(downloaded[1]['Content-Disposition'].startswith('attachment;'))
+        self.assertEqual(self.request('HEAD',path+'/download',headers=public)[0],200)
+        self.assertEqual(self.request('GET','/state',headers=public)[0],403)
+        self.assertEqual(self.request('GET','/files/'+e['id'],headers=public)[0],403)
+        self.assertEqual(self.request('PUT',path,{},public)[0],403)
+        self.assertEqual(self.request('DELETE','/shares/'+ident)[0],200)
+        self.assertEqual(self.request('GET',path,headers=public)[0],404)
+
+    def test_public_share_expiry_and_trash_revokes_permanently(self):
+        e=self.entry();self.save([e]);ident=str(uuid.uuid4())
+        self.assertEqual(self.request('PUT','/shares/'+ident,{'fileId':e['id'],'ttl':0})[0],400)
+        record=json.loads(self.request('PUT','/shares/'+ident,{'fileId':e['id'],'ttl':86400})[2])
+        path=record['path'].replace('/cloud/share/','/share/');public={'X-Cloud-Public':'1'}
+        with self.store.connect() as db:db.execute('UPDATE shares SET expires=0 WHERE id=?',(ident,))
+        self.assertEqual(self.request('GET',path,headers=public)[0],404)
+        ident=str(uuid.uuid4());record=json.loads(self.request('PUT','/shares/'+ident,{'fileId':e['id'],'ttl':3600})[2])
+        path=record['path'].replace('/cloud/share/','/share/')
+        e['deleted']=1;self.assertEqual(self.save([e],1)[0],200)
+        self.assertEqual(self.request('GET',path,headers=public)[0],404)
+        del e['deleted'];self.assertEqual(self.save([e],2)[0],200)
+        self.assertEqual(self.request('GET',path,headers=public)[0],404)
+
 
 if __name__ == '__main__': unittest.main()

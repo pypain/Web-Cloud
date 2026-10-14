@@ -23,8 +23,8 @@ url=https://raw.githubusercontent.com/pypain/Web-Cloud/$ref
 for path in deploy/server-dist.tar.gz backend/server.py deploy/hxry-cloud.service deploy/hxry-cloud-server.conf; do
   curl -fSL "$url/$path" -o "$backup/${path##*/}"
 done
-printf '%s  %s\n' '4b577e8200f5d49161bc9f64dace884a87b90c17f714201759d01a9cd73e4e3c' "$backup/server-dist.tar.gz" | sha256sum -c -
-printf '%s  %s\n' 'e07a784b2eb283fd2532b9430685fa14a82085ef283726f27a6fbc7cdfae868d' "$backup/server.py" | sha256sum -c -
+printf '%s  %s\n' 'f7536094b20d440d6e4025eb4c6303db87e52c13ad49753e942b69a65ad299f5' "$backup/server-dist.tar.gz" | sha256sum -c -
+printf '%s  %s\n' 'f8e362f479aef7220e37b5ec427cdab943e7c4761a704ec64dacb2f2e4d8c28e' "$backup/server.py" | sha256sum -c -
 python3 - "$backup/server-dist.tar.gz" <<'PY'
 import pathlib,sys,tarfile
 with tarfile.open(sys.argv[1]) as archive:
