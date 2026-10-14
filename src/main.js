@@ -1,3 +1,4 @@
+import { mountPythonRunner, disposePythonRunner } from './python-runner.js';
 import { profile, accents, loadProfile, saveProfile, avatarFromFile } from './profile.js';
 import { UploadQueue } from './upload-queue.js';
 import { serverStorage, serverQuota, loadServer, saveServer, serverFile, serverText, loadShares, createShare, revokeShare } from './server-storage.js';
@@ -20,6 +21,8 @@ const fmt = n => n >= 1073741824 ? `${(n/1073741824).toLocaleString('ru',{maximu
 const date = n => new Date(n).toLocaleDateString('ru', {day:'numeric',month:'short',year:'numeric'});
 let saving = false, uploadQueue, lastViewKey = '';
 let db, entries = [], page = 'files', folder = null, selected = new Set(), preview = null, query = '', sort = 'name', ascending = true, view = 'list', urls = [];
+const isText = e => e.mime?.startsWith('text/') || /\.(py|pyw|js|mjs|cjs|ts|tsx|jsx|c|h|cpp|hpp|cc|java|cs|go|rs|rb|php|sh|bash|zsh|sql|html|htm|css|scss|svg|xml|yaml|yml|toml|ini|conf|txt|md|json|csv|log|r|lua|swift|kt)$/i.test(e.name);
+const isPython = e => /\.(py|pyw)$/i.test(e.name);
 const uid = () => crypto.randomUUID();
 const active = () => entries.filter(x => !x.deleted);
 const get = id => entries.find(x => x.id === id);
@@ -70,6 +73,7 @@ function avatarHTML(size='') {
  return `<span class="avatar ${size}">${profile.avatar?`<img src="${esc(profile.avatar)}" alt="">`:esc(initials)}</span>`;
 }
 function render() {
+  disposePythonRunner();
   const viewKey=`${page}:${folder}:${view}`, animateView=viewKey!==lastViewKey;lastViewKey=viewKey;
   urls.forEach(URL.revokeObjectURL); urls=[];
   const list=visible(), p=get(preview), used=entries.reduce((a,e)=>a+(e.size||0),0), count=active().filter(e=>e.kind==='file').length;
@@ -95,7 +99,7 @@ function render() {
 function plural(n,a,b,c) {return n%10===1&&n%100!==11?a:n%10>=2&&n%10<=4&&(n%100<12||n%100>14)?b:c;}
 function previewHTML(e) {
  let media='';
- if(e.blob || (serverStorage && e.kind==='file')) { const u=serverStorage?serverFile(e):objectURL(e.blob); media=e.mime?.startsWith('image/')?`<img src="${u}" alt="${esc(e.name)}">`:e.mime?.startsWith('video/')?`<video controls src="${u}"></video>`:e.mime?.startsWith('audio/')?`<audio controls src="${u}"></audio>`:e.mime==='application/pdf'?`<iframe src="${u}" title="${esc(e.name)}"></iframe>`:e.mime?.startsWith('text/')||/\.(md|json|csv|log)$/i.test(e.name)?'<pre id="text-preview">Загрузка…</pre>':`<div class="unsupported">${fileIcon(e)}<p>Предпросмотр недоступен.<br>Скачайте файл, чтобы открыть его.</p></div>`; }
+ if(e.blob || (serverStorage && e.kind==='file')) { const u=serverStorage?serverFile(e):objectURL(e.blob); media=e.mime?.startsWith('image/')?`<img src="${u}" alt="${esc(e.name)}">`:e.mime?.startsWith('video/')?`<video controls src="${u}"></video>`:e.mime?.startsWith('audio/')?`<audio controls src="${u}"></audio>`:e.mime==='application/pdf'?`<iframe src="${u}" title="${esc(e.name)}"></iframe>`:isText(e)?'<pre id="text-preview">Загрузка…</pre>'+(isPython(e)?'<div id="python-runner"></div>':''):`<div class="unsupported">${fileIcon(e)}<p>Предпросмотр недоступен.<br>Скачайте файл, чтобы открыть его.</p></div>`; }
  return `<aside class="preview-panel" aria-label="Предпросмотр"><div class="preview-heading"><span>ПРЕДПРОСМОТР</span><button class="icon-button" data-action="close-preview" aria-label="Закрыть предпросмотр">${icon('x')}</button></div><div class="preview-media">${media}</div><h2>${esc(e.name)}</h2><span class="file-type">${esc(e.mime||'Файл')}</span><dl><div><dt>Размер</dt><dd>${fmt(e.size)}</dd></div><div><dt>Изменено</dt><dd>${date(e.modified)}</dd></div><div><dt>Расположение</dt><dd>${esc(get(e.parent)?.name||'Все файлы')}</dd></div></dl><button class="button primary full" data-download="${e.id}">${icon('download')}Скачать файл</button>${!e.deleted?`<button class="button secondary full" data-share="${e.id}">${icon('link')}Поделиться</button>`:''}</aside>`;
 }
 function bind() {
@@ -114,7 +118,7 @@ function bind() {
  $('#select-all').onchange=e=>{visible().forEach(x=>e.target.checked?selected.add(x.id):selected.delete(x.id));render();};
  $('#search').oninput=e=>{const pos=e.target.selectionStart;query=e.target.value;selected.clear();render();$('#search').focus();$('#search').setSelectionRange(pos,pos);};
  $('#file-input').onchange=e=>upload([...e.target.files]);
- const p=get(preview); if($('#text-preview')&&p&&(p.blob||serverStorage)) (serverStorage?serverText(p):p.blob.slice(0,200000).text()).then(t=>{if(preview===p.id&&$('#text-preview'))$('#text-preview').textContent=t+(p.size>200000?'\n… Показаны первые 200 КБ':'');}).catch(()=>{if($('#text-preview'))$('#text-preview').textContent='Не удалось загрузить предпросмотр';});
+ const p=get(preview); if($('#text-preview')&&p&&(p.blob||serverStorage)) (serverStorage?serverText(p):p.blob.slice(0,200000).text()).then(t=>{if(preview===p.id&&$('#text-preview')){$('#text-preview').textContent=t+(p.size>200000?'\n… Показаны первые 200 КБ':'');if(isPython(p)&&$('#python-runner'))mountPythonRunner($('#python-runner'),t,p.size<=100000);}}).catch(()=>{if($('#text-preview'))$('#text-preview').textContent='Не удалось загрузить предпросмотр';});
 }
 function openEntry(id) {if(serverStorage&&saving)return toast('Дождитесь завершения загрузки.');const e=get(id);if(e.kind==='folder'){if(e.deleted)return toast('Сначала восстановите папку');openFolder(id);}else{preview=id;render();}}
 function setSort(key){ascending=sort===key?!ascending:true;sort=key;render();}

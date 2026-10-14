@@ -24,9 +24,10 @@ chmod 700 "$backup"
 curl -fSL "$url/backend/server.py" -o "$backup/server.py"
 curl -fSL "$url/deploy/server-dist.tar.gz" -o "$backup/server-dist.tar.gz"
 curl -fSL "$url/deploy/public-shares.conf" -o "$backup/public-shares.conf"
+curl -fSL "$url/deploy/python-runtime.conf" -o "$backup/python-runtime.conf"
 cp -p /etc/nginx/snippets/hxry-cloud.conf "$backup/snippet.conf"
-printf '%s  %s\n' '593089f19c061e8461ee1a0b33d99c1794acf9714e10868fb82c5d4544f76c0f' "$backup/server.py" | sha256sum -c -
-printf '%s  %s\n' 'f7536094b20d440d6e4025eb4c6303db87e52c13ad49753e942b69a65ad299f5' "$backup/server-dist.tar.gz" | sha256sum -c -
+printf '%s  %s\n' '966f3daf8f9d3db9354c899a731b9e66e4f3a97831be1c7a35eeab4219058ece' "$backup/server.py" | sha256sum -c -
+printf '%s  %s\n' '984938a323b0a630470c97f36cf013f5ff8ec8c26058aafc1b07aaf74c7da97c' "$backup/server-dist.tar.gz" | sha256sum -c -
 python3 - "$backup/server-dist.tar.gz" <<'PY'
 import pathlib,sys,tarfile
 with tarfile.open(sys.argv[1]) as archive:
@@ -54,6 +55,9 @@ if 'location ^~ /cloud/share/' not in text:
         tail=tail.replace(marker,marker+'\n    proxy_set_header X-Cloud-Public "0";',1)
     text=text[:start]+tail
 (root/'new-snippet.conf').write_text(text)
+if 'location ^~ /cloud/python-runtime/' not in text:
+    text=(root/'python-runtime.conf').read_text()+'\n'+text
+    (root/'new-snippet.conf').write_text(text)
 PY
 cat > "$backup/restore.sh" <<'RESTORE'
 #!/usr/bin/env bash
@@ -126,6 +130,17 @@ for endpoint in /cloud/ /cloud/api/state; do
   code=$(curl --noproxy '*' --resolve hxry.ru:443:127.0.0.1 -sS --max-time 15 -o /dev/null -w '%{http_code}' "https://hxry.ru$endpoint")
   [[ $code == 401 ]] || { echo "Private route $endpoint is not protected ($code)"; false; }
 done
+python3 - <<'PY'
+import subprocess,time
+deadline=time.monotonic()+25
+while True:
+    p=subprocess.run(['curl','--noproxy','*','--resolve','hxry.ru:443:127.0.0.1','--connect-timeout','3','--max-time','4',
+                      '-H','Origin: null','-sS','-D','-','-o','/dev/null','-w','%{http_code}',
+                      'https://hxry.ru/cloud/python-runtime/pyodide.js'],capture_output=True,text=True,timeout=6)
+    if p.returncode==0 and p.stdout.strip().endswith('200') and 'access-control-allow-origin: *' in p.stdout.lower():break
+    if time.monotonic()>=deadline:raise SystemExit('Python runtime route did not become ready')
+    time.sleep(.5)
+PY
 curl --noproxy '*' --resolve hxry.ru:443:127.0.0.1 --user cloudadmin -fsS --max-time 15 https://hxry.ru/cloud/api/state > "$backup/authenticated.json"
 python3 - "$backup/authenticated.json" <<'PY'
 import json,pathlib,sys

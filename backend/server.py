@@ -353,7 +353,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not entry or not store.path(entry['id']).is_file(): raise Problem(404,'Link unavailable')
                     if len(fields)==1:
                         text=None
-                        if entry['mime']=='text/plain' or pathlib.Path(entry['name']).suffix.lower() in ('.txt','.md','.json','.csv','.log','.yaml','.yml','.xml','.ini','.conf'):
+                        if entry['mime']=='text/plain' or pathlib.Path(entry['name']).suffix.lower() in ('.txt','.md','.json','.csv','.log','.yaml','.yml','.xml','.ini','.conf','.py','.pyw','.js','.mjs','.cjs','.ts','.tsx','.jsx','.c','.h','.cpp','.hpp','.cc','.java','.cs','.go','.rs','.rb','.php','.sh','.bash','.zsh','.sql','.html','.htm','.css','.scss','.svg','.toml','.r','.lua','.swift','.kt'):
                             with store.path(entry['id']).open('rb') as source:text=source.read(200*1024).decode('utf-8',errors='replace')
                         return self.public_page(200,entry['name'],download='/cloud/share/'+fields[0]+'/download',entry=entry,text=text,expires=row[1])
                     share_token=fields[0]

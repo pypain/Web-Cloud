@@ -123,3 +123,28 @@ the landing page. CSP permits same-origin media/frame resources, denies connecti
 and external resources, and forbids embedding the landing page elsewhere. File
 responses retain their sandbox and nosniff restrictions. Mobile actions precede
 the preview and the layout honors reduced-motion preferences.
+
+## Source previews and browser Python
+
+Python and other common source/config extensions are displayed as escaped text,
+including files stored with application/octet-stream. Their contents are never
+served as executable HTML/JavaScript. Source previews are bounded to 200 KiB.
+
+In the private interface, .py/.pyw files up to 100 KB can be edited temporarily
+and run with the pinned Pyodide 0.27.7 runtime on the viewer's device. The editor
+does not overwrite the uploaded file. Stdin is supplied in a separate field;
+stdout/errors are capped and displayed as text. Runtime startup is bounded to
+90 seconds and execution to 10 seconds, subject to browser scheduling. Stop or
+closing the preview removes the execution iframe and worker.
+
+Execution uses an opaque-origin sandbox iframe (allow-scripts, no
+allow-same-origin) and a dedicated Worker. Worker-inherited CSP permits only the
+self-hosted Python runtime asset path for script/data loads, blocking cloud API
+requests. No code is executed on the VPS. The public runtime asset prefix serves
+only immutable npm artifacts with CORS for the opaque-origin context; private
+APIs and uploaded files remain protected. No external CDN is required.
+
+Standard-library scripts are supported; third-party Python packages, server
+filesystem access and arbitrary networking are not. There is no hard browser
+memory quota, so large allocations can still exhaust resources on the viewer's
+device. Python execution is not offered on public sharing pages.

@@ -293,6 +293,14 @@ class StorageTests(unittest.TestCase):
         self.assertEqual(self.request('GET',path+'/preview',headers=public)[0],415)
         self.assertTrue(self.request('GET',path+'/download',headers=public)[1]['Content-Disposition'].startswith('attachment;'))
 
+    def test_python_source_shared_as_escaped_text_without_execution(self):
+        e=self.entry(name='program.py',content=b'print("<hello>")');e['mime']='application/octet-stream';self.save([e])
+        ident=str(uuid.uuid4());record=json.loads(self.request('PUT','/shares/'+ident,{'fileId':e['id'],'ttl':3600})[2])
+        path=record['path'].replace('/cloud/share/','/share/')
+        page=self.request('GET',path,headers={'X-Cloud-Public':'1'})
+        self.assertIn(b'&lt;hello&gt;',page[2])
+        self.assertNotIn(b'python-run',page[2])
+
 
 
 if __name__ == '__main__': unittest.main()
