@@ -61,6 +61,7 @@ test('folder descendants, duplicate names, grid and permanent deletion',async({p
  await page.locator('.file-name').filter({hasText:'Документы'}).click();
  const file={name:'a.txt',mimeType:'text/plain',buffer:Buffer.from('abc')};
  await page.locator('#file-input').setInputFiles(file);
+ await expect(page.locator('.upload-status')).toContainText('Всё на своём месте');
  await page.locator('#file-input').setInputFiles(file);
  await expect(page.locator('.file-row')).toHaveCount(2);
  await expect(page.locator('.file-name').filter({hasText:'a (1).txt'})).toBeVisible();

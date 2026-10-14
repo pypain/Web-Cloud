@@ -1,4 +1,4 @@
-import { request, serverMaxFile } from './server-storage.js';
+import { request, serverMaxFile, authUser, csrfToken } from './server-storage.js';
 const KEY = 'hxry-upload-queue-v1';
 const API = `${import.meta.env.BASE_URL}api/`;
 const CHUNK = 4 * 1024 ** 2;
@@ -18,9 +18,11 @@ async function fingerprint(file) {
 }
 export class UploadQueue {
   constructor(onCommitted) {
+    this.key=authUser?KEY+':'+authUser.id:KEY;
+    if(authUser?.originalOwner)try{if(!localStorage.getItem(this.key)&&localStorage.getItem(KEY))localStorage.setItem(this.key,localStorage.getItem(KEY));localStorage.removeItem(KEY);}catch{}
     this.collapsed = matchMedia('(max-width:700px)').matches;
     this.onCommitted = onCommitted; this.files = new Map(); this.running = false; this.active = null; this.xhr = null; this.abort = null;
-    try { this.items = JSON.parse(localStorage.getItem(KEY) || '[]').filter(item => item && /^[a-f0-9-]{36}$/.test(item.id) && typeof item.name==='string' && Number.isSafeInteger(item.size) && item.size>=0 && /^[a-f0-9]{64}$/.test(item.fingerprint)); } catch { this.items = []; }
+    try { this.items = JSON.parse(localStorage.getItem(this.key) || '[]').filter(item => item && /^[a-f0-9-]{36}$/.test(item.id) && typeof item.name==='string' && Number.isSafeInteger(item.size) && item.size>=0 && /^[a-f0-9]{64}$/.test(item.fingerprint)); } catch { this.items = []; }
     for (const item of this.items) if (!['done','cancelled'].includes(item.status)) { item.status='source'; item.offset=Number.isSafeInteger(item.offset)?Math.max(0,Math.min(item.offset,item.size)):0; item.loaded=item.offset; }
     this.panel = document.createElement('section'); this.panel.className = 'upload-queue'; this.panel.setAttribute('aria-label','Очередь загрузок'); document.body.append(this.panel);
     this.input=document.createElement('input'); this.input.type='file'; this.input.hidden=true; document.body.append(this.input);
@@ -69,7 +71,7 @@ export class UploadQueue {
     if(changed)try{await this.onCommitted();}catch{}
   }
   save() {
-    try { localStorage.setItem(KEY,JSON.stringify(this.items.map(({ speed, ...item })=>item))); }
+    try { localStorage.setItem(this.key,JSON.stringify(this.items.map(({ speed, ...item })=>item))); }
     catch { this.warning='Браузер не сохранил очередь. После закрытия страницы автоматическое восстановление может быть недоступно.'; }
     this.render();
   }
@@ -119,7 +121,7 @@ export class UploadQueue {
     return new Promise((resolve,reject)=>{
       const xhr=this.xhr=new XMLHttpRequest();
       xhr.open('PUT',API+`uploads/${item.id}/chunk?offset=${item.offset}`);
-      xhr.setRequestHeader('X-Cloud-Request','1'); xhr.setRequestHeader('X-Chunk-SHA256',digest); xhr.timeout=120000;
+      xhr.setRequestHeader('X-Cloud-Request','1'); if(csrfToken){xhr.setRequestHeader('X-Cloud-CSRF',csrfToken);xhr.setRequestHeader('X-Cloud-Account',authUser.id);} xhr.setRequestHeader('X-Chunk-SHA256',digest); xhr.timeout=120000;
       let previous=0,stamp=performance.now();
       xhr.upload.onprogress=event=>{
         const now=performance.now(); item.loaded=item.offset+Math.min(blob.size,event.loaded);
@@ -129,7 +131,7 @@ export class UploadQueue {
       xhr.onload=()=>{
         let result; try {result=JSON.parse(xhr.responseText);} catch {return reject(new Error('Некорректный ответ сервера'));}
         if(xhr.status>=200&&xhr.status<300)resolve(result);
-        else {const error=new Error(result.error||`Ошибка загрузки (${xhr.status})`);error.status=xhr.status;reject(error);}
+        else {if(xhr.status===401&&authUser)location.replace(import.meta.env.BASE_URL+'auth/');const error=new Error(result.error||`Ошибка загрузки (${xhr.status})`);error.status=xhr.status;reject(error);}
       };
       xhr.onerror=()=>{const error=new Error('Соединение прервано. Подтверждённые части сохранены на сервере.');error.network=true;reject(error);};
       xhr.ontimeout=xhr.onerror;

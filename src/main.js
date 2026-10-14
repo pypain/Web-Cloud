@@ -1,3 +1,4 @@
+import { accountGate, account, logout } from './accounts.js';
 import { mountPythonRunner, disposePythonRunner } from './python-runner.js';
 import { profile, accents, loadProfile, saveProfile, avatarFromFile } from './profile.js';
 import { UploadQueue } from './upload-queue.js';
@@ -36,6 +37,7 @@ function fileType(e) {
 }
 function objectURL(blob) { const u = URL.createObjectURL(blob); urls.push(u); return u; }
 async function init() {
+  if(await accountGate())return;
   await loadProfile();
   let initialized;
   if (serverStorage) { const data = await loadServer(); entries = data.entries; initialized = data.version > 0; }
@@ -101,7 +103,7 @@ function uploadHTML() {
   </section>`;
 }
 function profileHTML(used, count) {
-  return `<div class="profile-layout"><section class="profile-card"><div class="profile-card-heading">${avatarHTML('profile-avatar')}<div><span class="eyebrow">ВЛАДЕЛЕЦ АРХИВА</span><h2>${esc(profile.name)}</h2><span class="profile-status">${serverStorage?'Личное хранилище на сервере':'Личное пространство · это устройство'}</span></div></div><p>${esc(profile.bio)||'Архив, в котором всё по-вашему.'}</p><button class="button primary" data-action="edit-profile">${icon('settings-2')}Настроить профиль</button><p class="field-note">Имя, название архива, фото, цвет и анимации.</p></section><section class="archive-card"><span class="eyebrow">ВАША КОЛЛЕКЦИЯ</span><h2>${esc(profile.collection||'Мой архив')}</h2><div class="archive-stat"><span>${fmt(used)}</span><small>занято файлами</small></div><dl class="info-list"><div><dt>Файлы в архиве</dt><dd>${count}</dd></div><div><dt>Папки</dt><dd>${active().filter(e=>e.kind==='folder').length}</dd></div><div><dt>Хранение</dt><dd>${serverStorage?'На сервере':'В этом браузере'}</dd></div></dl><div class="profile-note">${icon('hard-drive')}<p>${serverStorage?'Файлы доступны с ваших устройств после входа. Корзина тоже занимает место.':'Очистка данных сайта удалит архив. Корзина тоже занимает место.'}</p></div><button class="text-link" data-action="storage">О хранилище ${icon('arrow-up-right')}</button></section></div>`;
+  return `<div class="profile-layout"><section class="profile-card"><div class="profile-card-heading">${avatarHTML('profile-avatar')}<div><span class="eyebrow">ВЛАДЕЛЕЦ АРХИВА</span><h2>${esc(profile.name)}</h2><span class="profile-status">${serverStorage?'Личное хранилище на сервере':'Личное пространство · это устройство'}</span></div></div><p>${esc(profile.bio)||'Архив, в котором всё по-вашему.'}</p><button class="button primary" data-action="edit-profile">${icon('settings-2')}Настроить профиль</button><p class="field-note">Имя, название архива, фото, цвет и анимации.</p>${account?`<div class="account-profile-actions"><a class="button secondary" href="${import.meta.env.BASE_URL}auth/?password=1">Сменить пароль</a>${account.role==='admin'?`<a class="button secondary" href="${import.meta.env.BASE_URL}admin/">Управление аккаунтами</a>`:''}<button class="button secondary" data-action="logout">Выйти · ${esc(account.username)}</button></div>`:''}</section><section class="archive-card"><span class="eyebrow">ВАША КОЛЛЕКЦИЯ</span><h2>${esc(profile.collection||'Мой архив')}</h2><div class="archive-stat"><span>${fmt(used)}</span><small>занято файлами</small></div><dl class="info-list"><div><dt>Файлы в архиве</dt><dd>${count}</dd></div><div><dt>Папки</dt><dd>${active().filter(e=>e.kind==='folder').length}</dd></div><div><dt>Хранение</dt><dd>${serverStorage?'На сервере':'В этом браузере'}</dd></div></dl><div class="profile-note">${icon('hard-drive')}<p>${serverStorage?'Файлы доступны с ваших устройств после входа. Корзина тоже занимает место.':'Очистка данных сайта удалит архив. Корзина тоже занимает место.'}</p></div><button class="text-link" data-action="storage">О хранилище ${icon('arrow-up-right')}</button></section></div>`;
 }
 function render() {
   disposePythonRunner();
@@ -225,6 +227,7 @@ function action(a,event) {
  if(a==='dismiss-upload'){uploadState=null;render();}
  if(a==='settings')nav('profile');
  if(a==='edit-profile')profileDialog();
+ if(a==='logout')logout();
  if(['help','storage'].includes(a))infoDialog(a);
 }
 function toast(message,error=false) {const root=$('#toast-root');root.innerHTML=`<div class="toast ${error?'error':''}">${icon(error?'circle-alert':'check')}${esc(message)}</div>`;createIcons({icons});setTimeout(()=>{if(!saving)root.replaceChildren();},4500);}

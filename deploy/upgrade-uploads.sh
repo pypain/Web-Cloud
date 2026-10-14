@@ -4,6 +4,10 @@ set -euo pipefail
 umask 077
 [[ $EUID == 0 && ${1:-} =~ ^[a-f0-9]{40}$ ]] || { echo 'Run as root with full deployment commit SHA'; exit 2; }
 ref=$1
+if [[ -f /var/lib/hxry-cloud/accounts.sqlite ]]; then
+  echo 'Accounts are enabled; use deploy/install-accounts.sh with this commit SHA.'
+  exit 2
+fi
 url=https://raw.githubusercontent.com/pypain/Web-Cloud/$ref
 if [[ ! -e /etc/systemd/system/hxry-cloud.service ]]; then
   echo 'Backend is not installed yet; running the first-install path.'
@@ -21,13 +25,15 @@ old_ui=$(readlink "$root/current"); old_backend=$(readlink "$backend/current")
 [[ ! -e $root/releases/$ref && ! -e $backend/releases/$ref ]] || { echo 'Release already exists; refusing overwrite'; exit 1; }
 backup=$(mktemp -d /root/hxry-upload-upgrade-XXXXXXXX)
 chmod 700 "$backup"
+curl -fSL "$url/backend/accounts.py" -o "$backup/accounts.py"
 curl -fSL "$url/backend/server.py" -o "$backup/server.py"
 curl -fSL "$url/deploy/server-dist.tar.gz" -o "$backup/server-dist.tar.gz"
 curl -fSL "$url/deploy/public-shares.conf" -o "$backup/public-shares.conf"
 curl -fSL "$url/deploy/python-runtime.conf" -o "$backup/python-runtime.conf"
 cp -p /etc/nginx/snippets/hxry-cloud.conf "$backup/snippet.conf"
-printf '%s  %s\n' 'd61c3612c706f7814bd77040d061c5f018cfea52ababb21d39f8b1e34aa8d29a' "$backup/server.py" | sha256sum -c -
-printf '%s  %s\n' '3d6046be057b0f8ceb979dba0987f2c433b445ff788ccadc1c823abe226e04bc' "$backup/server-dist.tar.gz" | sha256sum -c -
+printf '%s  %s\n' '0962704d4766dc46ef1fba7ed9463e46f97c1788ab1d960a61dae67eb0bf7429' "$backup/server.py" | sha256sum -c -
+printf '%s  %s\n' '1994513023a9c4d3cac0cf03709eea3db25ae9ce049dd461ad5701e2643c90ff' "$backup/server-dist.tar.gz" | sha256sum -c -
+printf '%s  %s\n' '74f7862e10ec80f624603bd0df60ef200a95cb0ad489de3371b8ec852f4955b9' "$backup/accounts.py" | sha256sum -c -
 python3 - "$backup/server-dist.tar.gz" <<'PY'
 import pathlib,sys,tarfile
 with tarfile.open(sys.argv[1]) as archive:
@@ -81,6 +87,7 @@ rollback(){ result=$?; trap - ERR; bash "$backup/restore.sh" || echo "Use $backu
 trap rollback ERR
 install -d -m 755 "$root/releases/$ref" "$backend/releases/$ref"
 install -m 644 "$backup/server.py" "$backend/releases/$ref/server.py"
+install -m 644 "$backup/accounts.py" "$backend/releases/$ref/accounts.py"
 tar -C "$root/releases/$ref" -xzf "$backup/server-dist.tar.gz" --no-same-owner
 find "$root/releases/$ref" -type d -exec chmod 755 {} +
 find "$root/releases/$ref" -type f -exec chmod 644 {} +

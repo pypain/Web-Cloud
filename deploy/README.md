@@ -24,3 +24,13 @@ origin with existing pages; use a separate origin for a future production cloud.
 
 Validation: `npm test`; `npm run build -- --base=/cloud/`;
 `npx playwright test --config deploy/playwright.config.js`.
+
+## Website accounts
+
+To enable accounts on an existing single-owner backend, and for subsequent
+account-enabled upgrades, run `bash install-accounts.sh FULL_SHA` from the
+selected release. The password prompt creates the original `cloudadmin` owner;
+subsequent runs retain it. Use `/cloud/auth/` to sign in and `/cloud/admin/` to
+manage users. Keep the displayed rollback path, and never upload private backups.
+Pause uploads before migration. See [account security, data layout and console
+recovery](../backend/README.md#website-accounts-closed-registration).

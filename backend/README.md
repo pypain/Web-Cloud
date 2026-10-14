@@ -148,3 +148,81 @@ Standard-library scripts are supported; third-party Python packages, server
 filesystem access and arbitrary networking are not. There is no hard browser
 memory quota, so large allocations can still exhaust resources on the viewer's
 device. Python execution is not offered on public sharing pages.
+
+## Website accounts (closed registration)
+
+The account migration/update entry point is `deploy/install-accounts.sh FULL_SHA`.
+The installer creates the first `cloudadmin` website password interactively on
+the host (12–256 characters), backs up SQLite metadata with the backend stopped,
+checks original owner metadata, verifies nginx/HTTPS session access and denies
+anonymous storage access. It prints a local rollback script. Basic Auth files
+remain on the host for rollback; SSH and other sites/services are unchanged.
+Interrupted or failed migration restores previous code/configuration without
+deleting original files or new account data. Inactive releases from an earlier
+failed attempt are moved into its private backup before a retry. After accounts
+are enabled, use this installer for upgrades rather than `upgrade-uploads.sh`.
+
+Routes: `/cloud/auth/` for login, `/cloud/admin/` for account management,
+`/cloud/auth/?password=1` for changing one's own password. There is no public
+registration or email recovery. Admins can create accounts, adjust 1–100 GiB
+quotas, reset passwords, change roles and disable/enable accounts. Files remain
+when an account is disabled; its sessions and public links are revoked. Resetting
+passwords or changing roles revokes all that account's sessions. Self-demotion
+and self-blocking are denied; at least one active administrator must remain.
+Audit records cover logins and management actions, never passwords/session tokens.
+
+Each account has a server-generated UUID and its own Store under
+`/var/lib/hxry-cloud/users/UUID/`. The original owner's Store stays in place at
+`/var/lib/hxry-cloud` with existing files, profile and share URLs retained. All
+private endpoints (files, state, uploads, shares, profile) select the Store only
+from a validated session, never from client-supplied owner IDs. Admins manage
+account metadata and quota usage; the admin API does not open other users' files.
+Public links use a central token-to-owner index and the owner's visibility checks.
+The UI's resumable queues are scoped by account ID; the original owner imports
+its previous queue once. Shared-browser localStorage contains queue metadata,
+so browser profiles should be separate when local metadata privacy is required.
+
+Passwords use scrypt (N=16384,r=8,p=5, random 16-byte salt). Opaque random sessions
+are stored as SHA-256 digests, with a separate CSRF token. Cookies are Secure,
+HttpOnly, SameSite=Strict, scoped to `/cloud/`. Sessions expire after 12 hours or
+30 minutes of inactivity; activity refresh is persisted at most once a minute.
+Writes require an exact Origin, a custom request header and session CSRF token;
+login also requires exact Origin/custom header. Login attempts are reserved in
+SQLite before hashing (10 per login, 60 per source IP per 15 minutes). nginx
+sets the client identity from the existing trusted PROXY-protocol peer. Only
+local Unix-socket callers with the secret nginx token can reach the backend.
+Hash concurrency is bounded to two and 32 MiB upload buffers to two across users.
+Session count is limited to ten per account, users to 100 and audit retention to
+5,000 records. Quotas include unfinished uploads and trash; summed quotas do not
+reserve physical disk space. The existing host disk reserve still applies.
+
+Runtime activation uses the presence of `accounts.sqlite`; do not create an
+empty accounts DB on a running legacy deployment manually. For recovery from the
+host console as root (does not need a browser session):
+
+```sh
+python3 /opt/hxry-cloud-backend/current/manage-accounts.py reset-admin \
+  /var/lib/hxry-cloud /etc/hxry-cloud/backend-token
+```
+
+This restores the original owner to an enabled administrator, prompts locally
+for a new password and revokes its sessions. Metadata rollback backups are local
+and are not a substitute for encrypted off-host backups of the complete data
+root. MFA and email-based recovery are not provided in this version. The cloud
+shares an origin with the rest of hxry.ru; same-origin applications must also be
+trusted. A dedicated subdomain is the next step for browser-origin isolation.
+
+Validation:
+
+```sh
+python3 -m unittest discover -s backend -v
+VITE_SERVER_STORAGE=1 npm run build -- --base=/cloud/
+npx playwright test --config deploy/accounts-playwright.config.js --workers=1
+python3 deploy/test-accounts-nginx.py --nginx /usr/sbin/nginx
+```
+
+The nginx test uses an ephemeral locally trusted TLS certificate, PROXY protocol
+and a Unix socket without modifying host configuration. Browser tests verify
+owner preservation, independent users, admin access, reset/block, session
+revocation, resumed uploads and mobile layouts. Legacy storage tests remain
+available to validate the code prior to migration.

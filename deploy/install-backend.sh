@@ -20,11 +20,12 @@ chmod 700 "$backup"
 cp -p "$snippet" "$backup/snippet.conf"
 printf '%s\n' "$previous" > "$backup/previous-link"
 url=https://raw.githubusercontent.com/pypain/Web-Cloud/$ref
-for path in deploy/server-dist.tar.gz backend/server.py deploy/hxry-cloud.service deploy/hxry-cloud-server.conf; do
+for path in deploy/server-dist.tar.gz backend/server.py backend/accounts.py deploy/hxry-cloud.service deploy/hxry-cloud-server.conf; do
   curl -fSL "$url/$path" -o "$backup/${path##*/}"
 done
-printf '%s  %s\n' '3d6046be057b0f8ceb979dba0987f2c433b445ff788ccadc1c823abe226e04bc' "$backup/server-dist.tar.gz" | sha256sum -c -
-printf '%s  %s\n' 'd61c3612c706f7814bd77040d061c5f018cfea52ababb21d39f8b1e34aa8d29a' "$backup/server.py" | sha256sum -c -
+printf '%s  %s\n' '1994513023a9c4d3cac0cf03709eea3db25ae9ce049dd461ad5701e2643c90ff' "$backup/server-dist.tar.gz" | sha256sum -c -
+printf '%s  %s\n' '0962704d4766dc46ef1fba7ed9463e46f97c1788ab1d960a61dae67eb0bf7429' "$backup/server.py" | sha256sum -c -
+printf '%s  %s\n' '74f7862e10ec80f624603bd0df60ef200a95cb0ad489de3371b8ec852f4955b9' "$backup/accounts.py" | sha256sum -c -
 python3 - "$backup/server-dist.tar.gz" <<'PY'
 import pathlib,sys,tarfile
 with tarfile.open(sys.argv[1]) as archive:
@@ -84,6 +85,7 @@ rollback() {
 trap rollback ERR
 install -d -m 755 "$backend/releases/$ref"
 install -m 644 "$backup/server.py" "$backend/releases/$ref/server.py"
+install -m 644 "$backup/accounts.py" "$backend/releases/$ref/accounts.py"
 ln -s "releases/$ref" "$backend/current"
 install -m 644 "$backup/hxry-cloud.service" "$unit"
 systemctl daemon-reload

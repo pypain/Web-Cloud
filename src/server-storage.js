@@ -1,16 +1,19 @@
 export const serverStorage = import.meta.env.VITE_SERVER_STORAGE === '1';
 const api = `${import.meta.env.BASE_URL}api/`;
 let version = 0;
+export let authUser=null,csrfToken='';
+export function setSessionAuth(user,csrf){authUser=user;csrfToken=csrf;}
 export let serverQuota = 20 * 1024 ** 3;
 export let serverMaxFile = 5 * 1024 ** 3;
 export async function request(path, options = {}) {
   let response;
-  try { response = await fetch(api + path, { ...options, headers: { 'X-Cloud-Request': '1', ...options.headers } }); }
+  try { response = await fetch(api + path, { ...options, headers: { 'X-Cloud-Request': '1', ...(csrfToken?{'X-Cloud-CSRF':csrfToken,'X-Cloud-Account':authUser.id}:{}), ...options.headers } }); }
   catch(error) {
     if(error.name==='AbortError')throw error;
     const failure=new Error('Соединение прервано. Подтверждённые части сохранены на сервере.'); failure.network=true; throw failure;
   }
   if (!response.ok) {
+    if(response.status===401&&authUser&&!path.startsWith('auth/'))location.replace(import.meta.env.BASE_URL+'auth/');
     let message = `Ошибка сервера (${response.status})`;
     try { const data = await response.json(); message = data.error || message; } catch {}
     if (response.status === 409) message = path==='profile' ? 'Профиль изменён в другой вкладке. Обновите страницу перед сохранением.' : 'Хранилище изменилось в другой вкладке. Обновите страницу перед редактированием.';

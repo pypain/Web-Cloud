@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
-"""Single-owner file storage. Private Unix socket, authenticated nginx in front."""
+"""Isolated cloud stores, private Unix socket, optional website account sessions."""
 import hmac
+from accounts import Accounts, COOKIE
 import hashlib
 import base64
 import struct
@@ -19,6 +20,8 @@ import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlsplit, parse_qs, quote
+
+UPLOAD_IO = threading.BoundedSemaphore(2)  # Bound 32 MiB chunk buffers across tenants.
 
 ID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
 SAFE_TYPES = {'text/plain', 'application/pdf', 'image/png', 'image/jpeg', 'image/gif',
@@ -272,10 +275,11 @@ class Handler(BaseHTTPRequestHandler):
         super().setup()
         self.connection.settimeout(90)
 
-    def reply(self, code, data):
+    def reply(self, code, data, cookie=None):
         body = json.dumps(data, ensure_ascii=False).encode()
         self.send_response(code)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
+        if cookie is not None:self.send_header('Set-Cookie',cookie)
         self.send_header('Content-Length', str(len(body)))
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
@@ -344,11 +348,25 @@ class Handler(BaseHTTPRequestHandler):
             path = parsed.path
             share_token=None
             public=self.headers.get('X-Cloud-Public')=='1'
+            accounts=getattr(self.server,'accounts',None)
+            if accounts and write and self.headers.get('Origin')!=self.server.origin:raise Problem(403,'Wrong request origin')
             if public and (write or not path.startswith('/share/')): raise Problem(403,'Forbidden')
+            if not public and path=='/auth/me' and not accounts:return self.reply(200,{'accounts':False})
+            if accounts and not public and path.startswith('/auth/'):
+                return self.account_request(accounts,path,write)
+            user=None
+            if accounts and not path.startswith('/share/') and path!='/health':
+                user=accounts.session(self.headers.get('Cookie'))
+                if self.headers.get('X-Cloud-Account') and self.headers['X-Cloud-Account']!=user['id']:raise Problem(409,'Аккаунт изменился. Обновите страницу.')
+                if write and not hmac.compare_digest(self.headers.get('X-Cloud-CSRF',''),user['csrf']):raise Problem(403,'Invalid CSRF token')
+                if path.startswith('/admin/'):
+                    return self.admin_request(accounts,user,path,write)
+                store=accounts.storage(user)
             if path.startswith('/share/'):
                 if write: raise Problem(405,'Not allowed')
                 fields=path[len('/share/'):].split('/')
                 if len(fields)>2 or (len(fields)==2 and fields[1] not in ('download','preview')) or not re.fullmatch(r'[A-Za-z0-9_-]{43}',fields[0]): raise Problem(404,'Link unavailable')
+                if accounts:store=accounts.public_storage(fields[0])
                 with store.lock, store.connect() as db:
                     row=db.execute('SELECT file_id,expires FROM shares WHERE token=?',(fields[0],)).fetchone()
                     entry=store.visible_file(row[0]) if row and row[1]>time.time() else None
@@ -367,6 +385,7 @@ class Handler(BaseHTTPRequestHandler):
                 if not ID.fullmatch(ident): raise Problem(400,'Invalid share ID')
                 if self.command=='DELETE':
                     with store.lock, store.connect() as db: db.execute('DELETE FROM shares WHERE id=?',(ident,))
+                    if accounts:accounts.index_shares(user,store)
                     return self.reply(200,{'ok':True})
                 with store.lock, store.connect() as db:
                     if not write: raise Problem(404,'Not found')
@@ -380,6 +399,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not existing:
                         if db.execute('SELECT COUNT(*) FROM shares').fetchone()[0]>=10000: raise Problem(413,'Too many links')
                         db.execute('INSERT INTO shares VALUES (?,?,?,?)',(ident,secrets.token_urlsafe(32),file_id,int(time.time())+data['ttl']))
+                if accounts:accounts.index_shares(user,store)
                 return self.reply(200,next(s for s in store.share_records() if s['id']==ident))
             if not write and path == '/health':
                 return self.reply(200, {'ok': True})
@@ -427,7 +447,8 @@ class Handler(BaseHTTPRequestHandler):
                         if not offset.isdigit(): raise Problem(400,'Invalid offset')
                         digest=self.headers.get('X-Chunk-SHA256','')
                         if not re.fullmatch(r'[a-f0-9]{64}',digest): raise Problem(400,'Missing checksum')
-                        result=store.append_upload(ident,int(offset),self.read_exact(length),digest)
+                        with UPLOAD_IO:
+                            result=store.append_upload(ident,int(offset),self.read_exact(length),digest)
                     elif write and action=='complete': result=store.finish_upload(ident)
                     else: raise Problem(404,'Not found')
                 return self.reply(200,result)
@@ -522,6 +543,53 @@ class Handler(BaseHTTPRequestHandler):
         except Exception:
             self.reply(500, {'error': 'Storage operation failed'})
 
+    def json_body(self, limit=4096):
+        if self.headers.get_content_type()!='application/json':raise Problem(415,'Expected JSON')
+        try:data=json.loads(self.read_exact(self.length(limit)))
+        except (ValueError,UnicodeError):raise Problem(400,'Invalid JSON')
+        if not isinstance(data,dict):raise Problem(400,'Invalid JSON')
+        return data
+
+    def session_cookie(self, token='', clear=False):
+        return f'{COOKIE}={token}; Path=/cloud/; HttpOnly; Secure; SameSite=Strict; Max-Age={0 if clear else 43200}'
+
+    def account_request(self, accounts, path, write):
+        if path=='/auth/login' and self.command=='PUT':
+            data=self.json_body()
+            token=accounts.login(data.get('username'),data.get('password'),self.headers.get('X-Cloud-Client','unknown'))
+            return self.reply(200,{'ok':True},cookie=self.session_cookie(token))
+        user=accounts.session(self.headers.get('Cookie'))
+        if not write and path=='/auth/me':
+            return self.reply(200,{'accounts':True,'user':accounts.public_user(user),'csrf':user['csrf']})
+        if write and not hmac.compare_digest(self.headers.get('X-Cloud-CSRF',''),user['csrf']):raise Problem(403,'Invalid CSRF token')
+        if path=='/auth/logout' and self.command=='PUT':
+            with accounts.connect() as db:db.execute('DELETE FROM sessions WHERE token=?',(user['session_token'],))
+            return self.reply(200,{'ok':True},cookie=self.session_cookie(clear=True))
+        if path=='/auth/password' and self.command=='PUT':
+            data=self.json_body();accounts.change_password(user,data.get('currentPassword'),data.get('password'))
+            return self.reply(200,{'ok':True},cookie=self.session_cookie(clear=True))
+        raise Problem(404,'Not found')
+
+    def admin_request(self, accounts, user, path, write):
+        if user['role']!='admin':raise Problem(403,'Доступно только администратору.')
+        if path=='/admin/users' and not write:
+            with accounts.connect() as db:rows=db.execute('SELECT * FROM users ORDER BY created,username').fetchall()
+            users=[]
+            for row in rows:
+                item=accounts.public_user(row);store=accounts.storage(row)
+                item['used']=sum(e.get('size',0) for e in store.state()['entries']);users.append(item)
+            return self.reply(200,{'users':users})
+        if path=='/admin/audit' and not write:
+            with accounts.connect() as db:
+                events=[dict(row) for row in db.execute('SELECT a.at,COALESCE(u.username,a.actor) AS actor,a.event,a.target FROM audit a LEFT JOIN users u ON u.id=a.actor ORDER BY a.id DESC LIMIT 200')]
+            return self.reply(200,{'events':events})
+        if path=='/admin/users' and self.command=='PUT':
+            data=self.json_body();row=accounts.create(data.get('username'),data.get('password'),data.get('role','user'),data.get('quota'),actor=user['id'])
+            return self.reply(201,{'user':row})
+        if path.startswith('/admin/users/') and self.command=='PUT':
+            return self.reply(200,accounts.update(user,path[len('/admin/users/'):],self.json_body()))
+        raise Problem(404,'Not found')
+
     def length(self, limit):
         value = self.headers.get('Content-Length', '')
         if not value.isdigit() or self.headers.get('Transfer-Encoding'):
@@ -564,13 +632,19 @@ if __name__ == '__main__':
     server.store = Store(os.environ.get('CLOUD_DATA', '/var/lib/hxry-cloud'), token,
                          quota=int(os.environ.get('CLOUD_QUOTA', 20*1024**3)),
                          max_file=int(os.environ.get('CLOUD_MAX_FILE', 5*1024**3)))
+    server.accounts = Accounts(server.store,Problem) if (server.store.root/'accounts.sqlite').exists() else None
     server.origin = os.environ.get('CLOUD_ORIGIN', 'https://hxry.ru')
     def housekeeping():
         while True:
             try:
-                with server.store.lock:
-                    server.store.cleanup_uploads()
-                    server.store.cleanup_staged()
+                stores=[server.store]
+                if server.accounts:
+                    with server.accounts.connect() as db:users=db.execute('SELECT * FROM users').fetchall()
+                    stores += [server.accounts.storage(user) for user in users if not user['legacy']]
+                for store in stores:
+                    with store.lock:
+                        store.cleanup_uploads()
+                        store.cleanup_staged()
             except Exception:
                 print('Cloud housekeeping failed; check storage availability', flush=True)
             time.sleep(3600)
