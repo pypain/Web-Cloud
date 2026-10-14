@@ -26,7 +26,7 @@ UPLOAD_IO = threading.BoundedSemaphore(2)  # Bound 32 MiB chunk buffers across t
 
 ID = re.compile(r'^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$')
 SAFE_TYPES = {'text/plain', 'application/pdf', 'image/png', 'image/jpeg', 'image/gif',
-              'image/webp', 'image/avif', 'audio/mpeg', 'audio/ogg', 'audio/wav',
+              'image/webp', 'image/avif', 'audio/mpeg', 'audio/ogg', 'audio/wav', 'audio/flac', 'audio/x-flac',
               'video/mp4', 'video/webm', 'audio/mp4', 'video/ogg'}
 
 
@@ -291,7 +291,7 @@ class Handler(BaseHTTPRequestHandler):
         from string import Template
         nonce=secrets.token_urlsafe(18)
         preview_url=download.removesuffix('/download')+'/preview' if download else ''
-        mime=entry.get('mime','') if entry else ''
+        mime=('audio/flac' if pathlib.Path(entry['name']).suffix.lower()=='.flac' else entry.get('mime','')) if entry else ''
         escaped_url=html.escape(preview_url,quote=True)
         if text is not None:
             content='<pre class="text-preview" aria-label="Содержимое файла">'+html.escape(text)+'</pre>'
@@ -382,7 +382,7 @@ class Handler(BaseHTTPRequestHandler):
                             with store.path(entry['id']).open('rb') as source:text=source.read(200*1024).decode('utf-8',errors='replace')
                         return self.public_page(200,entry['name'],download='/cloud/share/'+fields[0]+'/download',entry=entry,text=text,expires=row[1])
                     share_token=fields[0]
-                    if fields[1]=='preview' and entry['mime'] not in SAFE_TYPES:raise Problem(415,'Preview unavailable')
+                    if fields[1]=='preview' and entry['mime'] not in SAFE_TYPES and pathlib.Path(entry['name']).suffix.lower()!='.flac':raise Problem(415,'Preview unavailable')
                 path='/files/'+entry['id'];parsed=parsed._replace(query='download=1' if fields[1]=='download' else '')
             if path=='/shares' or path.startswith('/shares/'):
                 if path=='/shares' and not write: return self.reply(200,{'shares':store.share_records()})
@@ -422,6 +422,7 @@ class Handler(BaseHTTPRequestHandler):
                     if not isinstance(collection,str) or not collection.strip() or len(collection)>60 or re.search(r'[\x00-\x1f\x7f]',collection): raise Problem(400,'Invalid archive name')
                     if not isinstance(bio,str) or len(bio)>160 or re.search(r'[\x00-\x1f\x7f]',bio): raise Problem(400,'Invalid profile description')
                     if profile.get('accent') not in ('copper','violet','blue','mint','rose','amber','silver') or type(profile.get('motion')) is not bool: raise Problem(400,'Invalid appearance settings')
+                    if profile.get('theme','dark') not in ('dark','light','system'): raise Problem(400,'Invalid theme')
                     if not isinstance(avatar,str): raise Problem(400,'Invalid avatar')
                     if avatar:
                         if not avatar.startswith('data:image/png;base64,'): raise Problem(400,'Avatar must be PNG')
@@ -430,7 +431,7 @@ class Handler(BaseHTTPRequestHandler):
                         if len(raw)>100*1024 or len(raw)<24 or raw[:8]!=b'\x89PNG\r\n\x1a\n' or raw[12:16]!=b'IHDR': raise Problem(400,'Invalid PNG avatar')
                         width,height=struct.unpack('>II',raw[16:24])
                         if not (1<=width<=256 and 1<=height<=256): raise Problem(400,'Avatar dimensions too large')
-                    clean={'name':name.strip(),'collection':collection.strip(),'bio':bio.strip(),'accent':profile['accent'],'motion':profile['motion'],'avatar':avatar}
+                    clean={'name':name.strip(),'collection':collection.strip(),'bio':bio.strip(),'accent':profile['accent'],'motion':profile['motion'],'theme':profile.get('theme','dark'),'avatar':avatar}
                     db.execute('UPDATE profile SET version=?,settings=? WHERE id=1',(version+1,json.dumps(clean)))
                 return self.reply(200,{'version':version+1,'profile':clean})
             if path.startswith('/uploads/'):
@@ -521,14 +522,15 @@ class Handler(BaseHTTPRequestHandler):
                         if start > end: raise Problem(416, 'Range outside file')
                         code = 206
                     self.send_response(code)
-                    self.send_header('Content-Type', entry['mime'])
+                    media_type='audio/flac' if pathlib.Path(entry['name']).suffix.lower()=='.flac' else entry['mime']
+                    self.send_header('Content-Type', media_type)
                     self.send_header('Content-Length', str(max(0, end-start+1)))
                     self.send_header('Accept-Ranges', 'bytes')
                     self.send_header('Cache-Control', 'no-store')
                     self.send_header('X-Content-Type-Options', 'nosniff')
                     self.send_header('Content-Security-Policy', 'sandbox')
                     self.send_header('Referrer-Policy','no-referrer')
-                    disposition = 'attachment' if 'download' in parse_qs(parsed.query) or entry['mime'] == 'application/octet-stream' else 'inline'
+                    disposition = 'attachment' if 'download' in parse_qs(parsed.query) or media_type == 'application/octet-stream' else 'inline'
                     self.send_header('Content-Disposition', f"{disposition}; filename*=UTF-8''{quote(entry['name'], safe='')}")
                     if code == 206: self.send_header('Content-Range', f'bytes {start}-{end}/{size}')
                     self.end_headers()

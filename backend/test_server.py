@@ -224,14 +224,29 @@ class StorageTests(unittest.TestCase):
 
     def test_profile_persistence_conflict_and_validation(self):
         state=json.loads(self.request('GET','/profile')[2])
-        settings={**state['profile'],'name':'Мой профиль','bio':'Проекты','collection':'Тихий архив','accent':'copper','motion':False}
+        settings={**state['profile'],'name':'Мой профиль','bio':'Проекты','collection':'Тихий архив','accent':'copper','motion':False,'theme':'light'}
         self.assertEqual(self.request('PUT','/profile',{'version':0,'profile':settings})[0],200)
         self.assertEqual(self.request('PUT','/profile',{'version':0,'profile':settings})[0],409)
         self.server.store=Store(self.temp.name,'test-token',reserve=0)
         self.assertEqual(json.loads(self.request('GET','/profile')[2])['profile'],settings)
-        for bad in ({'collection':''},{'collection':'x'*61},{'collection':'bad\nname'},{'avatar':'data:image/svg+xml,<svg/>'},{'name':''},{'accent':'url(evil)'},{'avatar':'data:image/png;base64,wrong'}):
+        for bad in ({'theme':'unknown'},{'collection':''},{'collection':'x'*61},{'collection':'bad\nname'},{'avatar':'data:image/svg+xml,<svg/>'},{'name':''},{'accent':'url(evil)'},{'avatar':'data:image/png;base64,wrong'}):
             self.assertEqual(self.request('PUT','/profile',{'version':1,'profile':{**settings,**bad}})[0],400)
         self.assertEqual(self.request('GET','/profile',auth=False)[0],403)
+
+    def test_flac_private_and_public_preview_range_with_legacy_mime(self):
+        for mime in ('application/octet-stream','audio/flac','audio/x-flac'):
+            e=self.entry(name='recording.FLAC',content=b'fLaCtestbytes');e['mime']=mime
+            version=json.loads(self.request('GET','/state')[2])['version']
+            self.assertEqual(self.save([e],version)[0],200)
+            status,headers,body=self.request('GET','/files/'+e['id'],headers={'Range':'bytes=0-3'})
+            self.assertEqual(status,206);self.assertEqual(body,b'fLaC')
+            self.assertEqual(headers['Content-Type'],'audio/flac')
+            self.assertTrue(headers['Content-Disposition'].startswith('inline;'))
+            share=json.loads(self.request('PUT','/shares/'+str(uuid.uuid4()),{'fileId':e['id'],'ttl':3600})[2])
+            path=share['path'].replace('/cloud/share/','/share/');public={'X-Cloud-Public':'1'}
+            self.assertIn(b'<audio',self.request('GET',path,headers=public)[2])
+            self.assertEqual(self.request('GET',path+'/preview',headers=public)[1]['Content-Type'],'audio/flac')
+            self.assertTrue(self.request('GET',path+'/download',headers=public)[1]['Content-Disposition'].startswith('attachment;'))
 
     def test_public_share_download_revoke_and_isolation(self):
         e=self.entry(name='<private>.txt');self.save([e])

@@ -25,10 +25,10 @@ url=https://raw.githubusercontent.com/pypain/Web-Cloud/$ref
 for path in backend/server.py backend/accounts.py backend/manage-accounts.py backend/replica.py deploy/server-dist.tar.gz deploy/hxry-cloud-accounts.conf; do
     curl -fSL "$url/$path" -o "$backup/${path##*/}"
 done
-printf '%s  %s\n' '34dc2c254bfcb2a2f54f9c5df40deb4711a7b875352bb07f868f26a891f29415' "$backup/server.py" | sha256sum -c -
+printf '%s  %s\n' 'd357c484b068f4e29f41c9ca1c377868ddd01ae76f6c52f9666da6be24ad4fa0' "$backup/server.py" | sha256sum -c -
 printf '%s  %s\n' '74f7862e10ec80f624603bd0df60ef200a95cb0ad489de3371b8ec852f4955b9' "$backup/accounts.py" | sha256sum -c -
 printf '%s  %s\n' '650bdcd28db96cac08b898d6a0b86aae90a0060feb284f4b16f608644e714f01' "$backup/manage-accounts.py" | sha256sum -c -
-printf '%s  %s\n' 'cf6063e1bd0f23d4ed67cb36312c6bf5b06ba143f64765afe1effe309ebdb43c' "$backup/server-dist.tar.gz" | sha256sum -c -
+printf '%s  %s\n' 'fe08132dd8841538a844b7886cda50658dbca5737b8426c3556a90e59b78947d' "$backup/server-dist.tar.gz" | sha256sum -c -
 printf '%s  %s\n' '94eda424e1aaa7bd965f3692157fcdc5f17a69d2e1279d2d8a909410060cbd4b' "$backup/hxry-cloud-accounts.conf" | sha256sum -c -
 printf '%s  %s\n' 'f036ada78e7426d8fcaa3eb6464e364a5b1b0dfdd3896f3f0be069e05d4a8929' "$backup/replica.py" | sha256sum -c -
 cp -p "$snippet" "$backup/snippet.conf"

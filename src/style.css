@@ -493,3 +493,29 @@ body:has(.preview-panel[aria-modal="true"]) .upload-queue{visibility:hidden}
 @media(max-width:700px){.account-header{flex-wrap:wrap;padding:18px 20px}.account-header nav{gap:12px}.account-brand{font-size:23px}.account-body{margin:32px auto}.auth-card,.admin-create,.admin-user{padding:20px}.admin-create form,.admin-fields{grid-template-columns:1fr}.admin-user-heading{flex-wrap:wrap}}
 .replica-card{border:1px solid var(--line);border-radius:8px;background:var(--panel);padding:24px;margin:24px 0}.replica-summary{display:flex;align-items:center;justify-content:space-between;gap:16px;flex-wrap:wrap}.replica-summary strong{font:24px var(--serif)}.replica-card progress{width:100%;height:12px;accent-color:var(--accent);margin-top:20px}.replica-details{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:16px;font-size:12px}.replica-details div{display:grid;gap:6px}.replica-details dt{color:var(--muted)}.replica-details dd{margin:0;overflow-wrap:anywhere}.replica-controls{display:flex;gap:10px;flex-wrap:wrap;margin:24px 0}#replica-key-panel input{margin-bottom:12px}#replica-key-panel button{margin:0 10px 12px 0}
 @media(max-width:700px){.replica-card{padding:20px}.replica-details{grid-template-columns:1fr}.replica-summary strong{font-size:21px}}
+
+.selection-marquee{position:fixed;z-index:80;pointer-events:none;border:1px solid var(--accent);background:color-mix(in srgb,var(--accent) 16%,transparent);box-shadow:0 0 0 1px #0001}
+.selecting-files,.selecting-files *{user-select:none!important;cursor:crosshair!important}
+.audio-preview{width:100%;display:flex;flex-direction:column;align-items:center;gap:18px;padding:24px 14px;color:var(--muted)}
+.audio-preview>svg{width:52px;height:52px;color:var(--accent)}
+.audio-preview strong{font-size:12px;letter-spacing:.5px;font-weight:500}
+.audio-error{font-size:12px;line-height:1.6;text-align:center;margin:0}
+:root{color:var(--paper);background:var(--bg)}
+html[data-theme="light"]{color-scheme:light;--bg:#f6f2e9;--panel:#fffcf5;--raised:#eee8dc;--paper:#302c25;--muted:#746c5e;--line:#d8d0c2;--accent-wash:#a5562c12}
+html[data-theme="light"] .sidebar{background:#ede7db}
+html[data-theme="light"] :is(.preview-media,.python-lab textarea,#python-output){background:#eee8dd;color:var(--paper)}
+html[data-theme="light"] :is(.modal,.context-menu,.selection-bar,.upload-queue){background:var(--panel);color:var(--paper);border-color:var(--line)}
+html[data-theme="light"] :is(.text-input,.search input,.search,.view-toggle,.profile-stat,.profile-card){color:var(--paper);background:var(--panel);border-color:var(--line)}
+html[data-theme="light"] :is(.file-icon,.avatar,.nav-item.active,.nav-count,.folder-card,.grid .file-row){background:var(--raised);color:var(--paper);border-color:var(--line)}
+html[data-theme="light"] :is(.file-row.selected,.folder-card.selected,.grid .file-row.selected){background:color-mix(in srgb,var(--accent) 20%,var(--panel));border-color:var(--accent)}
+html[data-theme="light"] :is(.nav-item:hover,.file-row:hover,.secondary:hover,.icon-button:hover){background:#302c2508}
+html[data-theme="light"] :is(.upload-queue button,.upload-status,.mobile-dock){background:var(--raised);color:var(--paper);border-color:var(--line)}
+html[data-theme="light"] :is(.upload-item small,.upload-queue>small,.file-name,.profile small,.nav-item,.folder-name,.file-subtitle,.profile-summary p){color:var(--muted)}
+html[data-theme="light"] :is(.file-name,.folder-name,.secondary,.profile strong){color:var(--paper)}
+html[data-theme="light"] .danger{color:#a13e30!important}
+html[data-theme="light"] .accent-picker input:focus-visible+span{outline-color:var(--paper)}
+html[data-theme="light"] .primary{background:var(--accent);color:#fff;border-color:var(--accent)}
+html[data-theme="light"] .primary:hover{background:color-mix(in srgb,var(--accent),black 12%)}
+html[data-theme="light"] :is(.upload-symbol,.upload-label){color:#52672c}
+html[data-theme="light"] :is(.upload-error .upload-symbol,.upload-error .upload-label,.form-error){color:#a13e30}
+html[data-theme="light"] .view-toggle .on{background:var(--raised)}
