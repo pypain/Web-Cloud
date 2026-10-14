@@ -269,5 +269,30 @@ class StorageTests(unittest.TestCase):
         del e['deleted'];self.assertEqual(self.save([e],2)[0],200)
         self.assertEqual(self.request('GET',path,headers=public)[0],404)
 
+    def test_public_preview_text_limits_range_and_revocation(self):
+        self.store.quota=2*1024**2;self.store.max_file=1024**2
+        payload=b'<script>window.evil=1</script>'+b'x'*(220*1024)
+        e=self.entry(content=payload);self.save([e])
+        ident=str(uuid.uuid4());record=json.loads(self.request('PUT','/shares/'+ident,{'fileId':e['id'],'ttl':3600})[2])
+        path=record['path'].replace('/cloud/share/','/share/');public={'X-Cloud-Public':'1'}
+        page=self.request('GET',path,headers=public)
+        self.assertIn(b'&lt;script&gt;window.evil=1&lt;/script&gt;',page[2])
+        self.assertNotIn(b'<script>window.evil',page[2])
+        self.assertIn('Показаны первые 200 КБ'.encode(),page[2])
+        self.assertIn("script-src 'nonce-",page[1]['Content-Security-Policy'])
+        preview=self.request('GET',path+'/preview',headers={**public,'Range':'bytes=0-5'})
+        self.assertEqual((preview[0],preview[2]),(206,b'<scrip'))
+        self.assertTrue(preview[1]['Content-Disposition'].startswith('inline;'))
+        self.assertEqual(self.request('DELETE','/shares/'+ident)[0],200)
+        self.assertEqual(self.request('GET',path+'/preview',headers=public)[0],404)
+
+    def test_public_preview_blocks_executable_mime(self):
+        e=self.entry(name='page.html',content=b'<script>alert(1)</script>');e['mime']='text/html';self.save([e])
+        ident=str(uuid.uuid4());record=json.loads(self.request('PUT','/shares/'+ident,{'fileId':e['id'],'ttl':3600})[2])
+        path=record['path'].replace('/cloud/share/','/share/');public={'X-Cloud-Public':'1'}
+        self.assertEqual(self.request('GET',path+'/preview',headers=public)[0],415)
+        self.assertTrue(self.request('GET',path+'/download',headers=public)[1]['Content-Disposition'].startswith('attachment;'))
+
+
 
 if __name__ == '__main__': unittest.main()

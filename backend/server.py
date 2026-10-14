@@ -282,16 +282,50 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def public_page(self, code, title, details='', download=''):
-        link=f'<a href="{html.escape(download,quote=True)}">Скачать файл</a>' if download else ''
-        body=(f'<!doctype html><html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
-              f'<title>{html.escape(title)} · Облако</title><style>body{{margin:0;background:#17181d;color:#eee;font:16px system-ui;display:grid;place-items:center;min-height:100vh}}'
-              f'main{{max-width:480px;margin:20px;padding:36px;background:#22232c;border:1px solid #48404f;border-radius:18px;overflow-wrap:anywhere}}'
-              f'p{{color:#aaa;line-height:1.6}}a{{display:inline-block;background:#b29af8;color:#211b30;padding:13px 24px;border-radius:9px;text-decoration:none;font-weight:600}}</style>'
-              f'<main><p>Личное облако · файл по ссылке</p><h1>{html.escape(title)}</h1><p>{html.escape(details)}</p>{link}</main></html>').encode()
+    def public_page(self, code, title, details='', download='', entry=None, text=None, expires=None):
+        from string import Template
+        nonce=secrets.token_urlsafe(18)
+        preview_url=download.removesuffix('/download')+'/preview' if download else ''
+        mime=entry.get('mime','') if entry else ''
+        escaped_url=html.escape(preview_url,quote=True)
+        if text is not None:
+            content='<pre class="text-preview" aria-label="Содержимое файла">'+html.escape(text)+'</pre>'
+            if entry['size']>200*1024:content+='<p class="hint">Показаны первые 200 КБ. Полное содержимое доступно при скачивании.</p>'
+            kind='Текст'
+        elif mime.startswith('image/'):
+            content=f'<img class="preview-media image-preview" src="{escaped_url}" alt="Предпросмотр изображения">';kind='Изображение'
+        elif mime.startswith('video/'):
+            content=f'<video class="preview-media" controls playsinline preload="metadata" src="{escaped_url}"></video>';kind='Видео'
+        elif mime.startswith('audio/'):
+            content=f'<div class="audio-art" aria-hidden="true">♫</div><audio class="preview-media" controls preload="metadata" src="{escaped_url}"></audio>';kind='Аудио'
+        elif mime=='application/pdf':
+            content=f'<iframe class="pdf-preview" src="{escaped_url}" title="Предпросмотр PDF" sandbox></iframe><p class="hint">Если браузер не показывает PDF, откройте его отдельно или скачайте файл.</p>';kind='PDF'
+        else:
+            content='<div class="unsupported"><span aria-hidden="true">▤</span><h2>Предпросмотр недоступен</h2><p>Скачайте файл и откройте его на своём устройстве.</p></div>';kind='Файл'
+        size=entry['size'] if entry else 0
+        unit='Б';number=float(size)
+        for next_unit in ('КБ','МБ','ГБ'):
+            if number<1024:break
+            number/=1024;unit=next_unit
+        size_label=(f'{number:.1f}'.replace('.',',') if unit!='Б' else str(size))+' '+unit
+        expiry=time.strftime('%d.%m.%Y, %H:%M МСК',time.gmtime(expires+10800)) if expires else ''
+        if entry:
+            panel=f'''<section class="preview"><div class="preview-header"><h2>Предпросмотр</h2><span>{kind}</span></div><div class="preview-body">{content}</div><p id="preview-status" class="hint" role="status"></p></section>
+            <aside class="file-card"><span class="badge">Общий файл</span><h1>{html.escape(title)}</h1><dl><div><dt>Размер</dt><dd>{size_label}</dd></div><div><dt>Формат</dt><dd>{html.escape(kind)}</dd></div><div><dt>Ссылка действует до</dt><dd>{expiry}</dd></div></dl>
+            <a class="download" href="{html.escape(download,quote=True)}"><span aria-hidden="true">↓</span> Скачать файл</a><button class="copy" id="copy-link">Копировать ссылку</button><input id="copy-value" readonly hidden aria-label="Ссылка на файл"><p id="copy-status" class="hint" role="status"></p>
+            <details class="actions"><summary>Другие действия</summary>{f'<a href="{escaped_url}" target="_blank" rel="noopener noreferrer">Открыть предпросмотр отдельно ↗</a>' if mime in SAFE_TYPES else ''}<a href="{html.escape(download,quote=True)}">Скачать оригинал</a></details><p class="privacy">Доступ предоставлен только к этому файлу. Владелец может отозвать ссылку.</p></aside>'''
+        else:
+            panel=f'<section class="error-card"><span class="badge">Общий файл</span><h1>{html.escape(title)}</h1><p>{html.escape(details)}</p><p class="hint">Попросите владельца прислать новую ссылку.</p></section>'
+        template=Template('''<!doctype html><html lang="ru"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="theme-color" content="#17181d"><title>$title · Облако</title><style>
+        *{box-sizing:border-box}body{margin:0;background:#17181d;color:#ececf1;font:14px system-ui,-apple-system,sans-serif}a,button{font:inherit}a{color:inherit;text-decoration:none}button{cursor:pointer}header{border-bottom:1px solid #2b2c34;padding:22px max(24px,calc((100vw - 1180px)/2));display:flex;align-items:center;justify-content:space-between;gap:20px}.brand{font-weight:700;display:flex;gap:12px;align-items:center}.brand-icon{display:grid;place-items:center;width:34px;height:34px;background:#302a42;color:#c9b6ff;border-radius:10px;font-size:23px}.header-note{color:#a09ba9;font-size:12px}main{max-width:1228px;margin:0 auto;padding:44px 24px 60px}.breadcrumb{color:#96909f;font-size:12px;margin-bottom:24px}.grid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:24px;align-items:start}.preview,.file-card,.error-card{background:#1c1d23;border:1px solid #303039;border-radius:16px;overflow:hidden}.preview-header{padding:18px 22px;border-bottom:1px solid #303039;display:flex;justify-content:space-between;align-items:center}.preview-header h2{margin:0;font-size:14px}.preview-header span,.badge{font-size:11px;color:#c9b6ff;background:#302a42;padding:5px 9px;border-radius:6px}.preview-body{min-height:360px;padding:20px;display:flex;flex-direction:column;align-items:center;justify-content:center;background:#14151a}.image-preview{object-fit:contain;max-height:65vh}.preview-media{width:100%;max-width:100%;border-radius:9px}video{max-height:65vh;background:#000}audio{margin-top:30px}.audio-art{display:grid;place-items:center;background:linear-gradient(135deg,#46365e,#262d42);width:150px;height:150px;border-radius:25px;color:#d9c5ff;font-size:68px}.text-preview{align-self:stretch;margin:0;width:100%;max-height:65vh;overflow:auto;padding:16px;border:1px solid #2b2c34;border-radius:9px;background:#191a20;white-space:pre-wrap;overflow-wrap:anywhere;font:13px/1.75 ui-monospace,monospace;color:#dbd8e4}.pdf-preview{width:100%;height:65vh;min-height:400px;border:0;background:white;border-radius:8px}.unsupported{text-align:center;padding:40px 16px;color:#a7a1b0}.unsupported>span{font-size:60px;color:#b29af8}.unsupported h2{font-size:18px;color:#ddd7e8}.file-card{padding:24px}h1{font-size:24px;line-height:1.35;letter-spacing:-.5px;overflow-wrap:anywhere;margin:18px 0 22px}dl{margin:0 0 26px}dl>div{display:flex;justify-content:space-between;gap:12px;margin:14px 0;font-size:12px}dt{color:#96909f;flex-shrink:0}dd{margin:0;text-align:right;overflow-wrap:anywhere}.download,.copy{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;padding:13px;border-radius:9px;font-weight:650}.download{background:#b29af8;color:#211b30}.download:hover{background:#c7b3ff}.copy{margin-top:10px;border:1px solid #45404f;background:#24222d;color:#d1cadc}.copy:hover{background:#302a3d}.hint,.privacy{color:#96909f;font-size:12px;line-height:1.6}.hint{padding:0 20px}.file-card .hint{padding:0}.privacy{margin-top:24px;border-top:1px solid #303039;padding-top:18px}.actions{margin-top:20px;font-size:12px}.actions summary{color:#bdb4ce;cursor:pointer}.actions a{display:block;margin-top:12px;color:#c9b6ff}#copy-value{width:100%;margin-top:12px;background:#14151a;color:#ddd;border:1px solid #514462;border-radius:6px;padding:10px}.error-card{grid-column:1/-1;max-width:600px;margin:40px auto;padding:32px;text-align:center}.error-card p{line-height:1.7;color:#aaa4b4}.error-card .hint{padding:0}footer{color:#716c7b;font-size:11px;text-align:center;margin-top:32px}a:focus-visible,button:focus-visible,summary:focus-visible,input:focus-visible{outline:2px solid #b29af8;outline-offset:4px}.grid{animation:appear .25s ease}a,button{transition:background .18s,transform .18s}.download:active{transform:scale(.98)}@keyframes appear{from{opacity:0;transform:translateY(6px)}to{opacity:1;transform:none}}@media(max-width:800px){main{padding:24px 14px}.grid{grid-template-columns:1fr}.file-card{grid-row:1}.file-card h1{margin:14px 0;font-size:22px}dl{margin-bottom:18px}.preview-body{min-height:240px;padding:12px}.header-note{display:none}header{padding:18px 20px}.image-preview,video{max-height:55vh}.pdf-preview{height:55vh;min-height:320px}.text-preview{max-height:55vh}}@media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}.download:active{transform:none}}
+        </style></head><body><header><div class="brand"><span class="brand-icon" aria-hidden="true">☁</span> Личное облако</div><span class="header-note">Файл по ссылке · без регистрации</span></header><main><div class="breadcrumb">Облако / Общий файл</div><div class="grid">$panel</div><footer>Файл доступен по ссылке до истечения срока или отзыва владельцем.</footer></main><script nonce="$nonce">
+        const copy=document.getElementById('copy-link');if(copy)copy.addEventListener('click',async()=>{const url=location.origin+location.pathname;const status=document.getElementById('copy-status');try{await navigator.clipboard.writeText(url);status.textContent='Ссылка скопирована';}catch{const input=document.getElementById('copy-value');input.hidden=false;input.value=url;input.focus();input.select();status.textContent='Скопируйте выделенную ссылку вручную';}});
+        document.querySelectorAll('.preview-media').forEach(media=>media.addEventListener('error',()=>{document.getElementById('preview-status').textContent='Браузер не смог открыть предпросмотр. Скачайте файл или попробуйте другой браузер.';}));
+        </script></body></html>''')
+        body=template.substitute(title=html.escape(title),panel=panel,nonce=nonce).encode()
         self.send_response(code);self.send_header('Content-Type','text/html; charset=utf-8');self.send_header('Content-Length',str(len(body)))
-        self.send_header('Cache-Control','no-store');self.send_header('Referrer-Policy','no-referrer');self.send_header('X-Robots-Tag','noindex, nofollow')
-        self.send_header('Content-Security-Policy',"default-src 'none'; style-src 'unsafe-inline'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
+        self.send_header('Cache-Control','no-store');self.send_header('Referrer-Policy','no-referrer');self.send_header('X-Robots-Tag','noindex, nofollow');self.send_header('X-Content-Type-Options','nosniff')
+        self.send_header('Content-Security-Policy',f"default-src 'none'; style-src 'unsafe-inline'; script-src 'nonce-{nonce}'; img-src 'self'; media-src 'self'; frame-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'")
         self.end_headers()
         if self.command!='HEAD': self.wfile.write(body)
 
@@ -312,15 +346,19 @@ class Handler(BaseHTTPRequestHandler):
             if path.startswith('/share/'):
                 if write: raise Problem(405,'Not allowed')
                 fields=path[len('/share/'):].split('/')
-                if len(fields)>2 or (len(fields)==2 and fields[1]!='download') or not re.fullmatch(r'[A-Za-z0-9_-]{43}',fields[0]): raise Problem(404,'Link unavailable')
+                if len(fields)>2 or (len(fields)==2 and fields[1] not in ('download','preview')) or not re.fullmatch(r'[A-Za-z0-9_-]{43}',fields[0]): raise Problem(404,'Link unavailable')
                 with store.lock, store.connect() as db:
                     row=db.execute('SELECT file_id,expires FROM shares WHERE token=?',(fields[0],)).fetchone()
                     entry=store.visible_file(row[0]) if row and row[1]>time.time() else None
                     if not entry or not store.path(entry['id']).is_file(): raise Problem(404,'Link unavailable')
                     if len(fields)==1:
-                        return self.public_page(200,entry['name'],f"Размер: {entry['size']:,} байт. Ссылка действует до {time.strftime('%d.%m.%Y %H:%M UTC',time.gmtime(row[1]))}.",'/cloud/share/'+fields[0]+'/download')
+                        text=None
+                        if entry['mime']=='text/plain' or pathlib.Path(entry['name']).suffix.lower() in ('.txt','.md','.json','.csv','.log','.yaml','.yml','.xml','.ini','.conf'):
+                            with store.path(entry['id']).open('rb') as source:text=source.read(200*1024).decode('utf-8',errors='replace')
+                        return self.public_page(200,entry['name'],download='/cloud/share/'+fields[0]+'/download',entry=entry,text=text,expires=row[1])
                     share_token=fields[0]
-                path='/files/'+entry['id'];parsed=parsed._replace(query='download=1')
+                    if fields[1]=='preview' and entry['mime'] not in SAFE_TYPES:raise Problem(415,'Preview unavailable')
+                path='/files/'+entry['id'];parsed=parsed._replace(query='download=1' if fields[1]=='download' else '')
             if path=='/shares' or path.startswith('/shares/'):
                 if path=='/shares' and not write: return self.reply(200,{'shares':store.share_records()})
                 ident=path[len('/shares/'):]

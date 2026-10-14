@@ -101,7 +101,7 @@ Only `/cloud/share/` bypasses nginx Basic authentication. It forwards a public
 isolation marker; the backend rejects public requests to every other API path
 and rejects mutations. Public content downloads as an attachment, with nosniff,
 sandbox, no-store and no-referrer headers. Access logging is disabled for this
-location. The landing page contains only the shared filename, size and expiry.
+location. The landing page contains only the selected file, its metadata and preview.
 Public recipient pages do not include analytics or other external resources.
 
 Revocation blocks new requests; an already-open download can finish. Moving a
@@ -109,3 +109,17 @@ file or its ancestor into trash deletes its links, so restoring the file does
 not reactivate old access. Missing, expired and revoked links return a generic
 404 page. The upgrade script preserves the private snippet and adds only the
 public prefix plus a private API isolation header, with nginx test and rollback.
+
+The public landing page includes download/copy actions and an optional standalone
+preview action. Raster images and supported audio/video stream through the token's
+`/preview` endpoint with range support. PDFs use the browser's native viewer and
+include an open/download fallback. Browser codec/viewer support determines whether
+these formats can render. Text and known text extensions render escaped plain text,
+bounded to the first 200 KiB. HTML, SVG and other executable formats are not served
+as active previews. Revocation/expiry is rechecked for every preview request.
+
+Only a nonce-authorized, fixed script handles copying and media error messages on
+the landing page. CSP permits same-origin media/frame resources, denies connections
+and external resources, and forbids embedding the landing page elsewhere. File
+responses retain their sandbox and nosniff restrictions. Mobile actions precede
+the preview and the layout honors reduced-motion preferences.

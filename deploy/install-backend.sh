@@ -24,7 +24,7 @@ for path in deploy/server-dist.tar.gz backend/server.py deploy/hxry-cloud.servic
   curl -fSL "$url/$path" -o "$backup/${path##*/}"
 done
 printf '%s  %s\n' 'f7536094b20d440d6e4025eb4c6303db87e52c13ad49753e942b69a65ad299f5' "$backup/server-dist.tar.gz" | sha256sum -c -
-printf '%s  %s\n' 'f8e362f479aef7220e37b5ec427cdab943e7c4761a704ec64dacb2f2e4d8c28e' "$backup/server.py" | sha256sum -c -
+printf '%s  %s\n' '593089f19c061e8461ee1a0b33d99c1794acf9714e10868fb82c5d4544f76c0f' "$backup/server.py" | sha256sum -c -
 python3 - "$backup/server-dist.tar.gz" <<'PY'
 import pathlib,sys,tarfile
 with tarfile.open(sys.argv[1]) as archive:
