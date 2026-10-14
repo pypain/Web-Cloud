@@ -1,11 +1,11 @@
 import { request, serverStorage } from './server-storage.js';
-export const accents = { violet: ['Фиолетовый','#b29af8'], blue: ['Голубой','#88b8ff'], mint: ['Мятный','#83d8c0'], rose: ['Розовый','#eda2c5'], amber: ['Янтарный','#e8bd82'], silver: ['Серебряный','#b8c3d6'] };
-export const defaults = { name:'Личное пространство',bio:'',accent:'violet',motion:true,avatar:'' };
+export const accents = { copper: ['Медный','#dfa080'], violet: ['Фиолетовый','#b29af8'], blue: ['Голубой','#88b8ff'], mint: ['Мятный','#83d8c0'], rose: ['Розовый','#eda2c5'], amber: ['Янтарный','#e8bd82'], silver: ['Серебряный','#b8c3d6'] };
+export const defaults = { name:'Личное пространство',bio:'',collection:'Мой архив',accent:'copper',motion:true,avatar:'' };
 export let profile={...defaults};
 let version=0;
 export function applyProfile(value) {
   profile={...defaults,...value};
-  document.documentElement.style.setProperty('--accent',accents[profile.accent]?.[1]||accents.violet[1]);
+  document.documentElement.style.setProperty('--accent',accents[profile.accent]?.[1]||accents.copper[1]);
   document.documentElement.dataset.motion=profile.motion?'on':'off';
 }
 export async function loadProfile() {

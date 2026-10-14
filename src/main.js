@@ -19,7 +19,9 @@ const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt
 const icon = (name, cls = '') => `<i data-lucide="${name}" class="${cls}" aria-hidden="true"></i>`;
 const fmt = n => n >= 1073741824 ? `${(n/1073741824).toLocaleString('ru',{maximumFractionDigits:1})} ГБ` : n < 1024 ? `${n} Б` : n < 1048576 ? `${(n/1024).toLocaleString('ru',{maximumFractionDigits:1})} КБ` : `${(n/1048576).toLocaleString('ru',{maximumFractionDigits:1})} МБ`;
 const date = n => new Date(n).toLocaleDateString('ru', {day:'numeric',month:'short',year:'numeric'});
-let saving = false, uploadQueue, lastViewKey = '';
+let saving = false, uploadQueue;
+let uploadState = null, lastScreen = '', lastPreview = null;
+const mobileViewport = matchMedia('(max-width: 700px)');
 let db, entries = [], page = 'files', folder = null, selected = new Set(), preview = null, query = '', sort = 'name', ascending = true, view = 'list', urls = [];
 const isText = e => e.mime?.startsWith('text/') || /\.(py|pyw|js|mjs|cjs|ts|tsx|jsx|c|h|cpp|hpp|cc|java|cs|go|rs|rb|php|sh|bash|zsh|sql|html|htm|css|scss|svg|xml|yaml|yml|toml|ini|conf|txt|md|json|csv|log|r|lua|swift|kt)$/i.test(e.name);
 const isPython = e => /\.(py|pyw)$/i.test(e.name);
@@ -28,6 +30,10 @@ const active = () => entries.filter(x => !x.deleted);
 const get = id => entries.find(x => x.id === id);
 const type = e => e.kind === 'folder' ? 'folder' : e.mime?.startsWith('image/') ? 'image' : e.mime === 'application/pdf' ? 'file-text' : /\.(xlsx|csv)$/i.test(e.name) ? 'sheet' : /\.(zip|rar)$/i.test(e.name) ? 'archive' : e.mime?.startsWith('video/') ? 'film' : e.mime?.startsWith('audio/') ? 'music' : 'file-text';
 function fileIcon(e) { return `<span class="file-icon ${type(e)}">${icon(type(e))}</span>`; }
+function initials() { return profile.name.trim().split(/\s+/).slice(0, 2).map(word => word[0]).join('').toLocaleUpperCase('ru') || 'Л'; }
+function fileType(e) {
+  return e.kind === 'folder' ? 'Папка' : e.mime?.startsWith('image/') ? 'Изображение' : e.mime === 'application/pdf' ? 'PDF-документ' : e.mime?.startsWith('video/') ? 'Видео' : e.mime?.startsWith('audio/') ? 'Аудио' : e.mime?.startsWith('text/') ? 'Текстовый документ' : 'Файл';
+}
 function objectURL(blob) { const u = URL.createObjectURL(blob); urls.push(u); return u; }
 async function init() {
   await loadProfile();
@@ -55,8 +61,8 @@ async function persist() {
 async function change(fn, message) {
  if (serverStorage && (saving || uploadQueue?.active)) return toast('Дождитесь завершения сохранения или загрузки.');
  const before = structuredClone(entries); saving = true;
- try { fn(); render(); if (serverStorage) toast('Сохранение на сервере…'); await persist(); if(message) toast(message); }
- catch(e) { entries = before; render(); toast(serverStorage ? e.message : 'Не удалось сохранить. Возможно, хранилище браузера заполнено.',true); }
+ try { fn(); render(); if (serverStorage) toast('Сохранение на сервере…'); await persist(); if(message) toast(message); return true; }
+ catch(e) { entries = before; render(); toast(serverStorage ? e.message : 'Не удалось сохранить. Возможно, хранилище браузера заполнено.',true); return false; }
  finally { saving = false; }
 }
 function visible() {
@@ -72,39 +78,88 @@ function avatarHTML(size='') {
  const initials=profile.name.trim().split(/\s+/).slice(0,2).map(word=>[...word][0]).join('').toLocaleUpperCase();
  return `<span class="avatar ${size}">${profile.avatar?`<img src="${esc(profile.avatar)}" alt="">`:esc(initials)}</span>`;
 }
+function entryHTML(e, index, card = false) {
+  const children = active().filter(x => x.parent === e.id).length;
+  const subtitle = e.kind === 'folder' ? `${children} ${plural(children,'элемент','элемента','элементов')}` : fmt(e.size);
+  const thumbnail = view === 'grid' && e.mime?.startsWith('image/') && (e.blob || serverStorage);
+  const thumbnailURL = thumbnail ? (serverStorage ? serverFile(e) : objectURL(e.blob)) : '';
+  return `<div class="file-row ${card ? 'folder-card' : ''} ${e.kind === 'folder' ? 'is-folder' : ''} ${selected.has(e.id) ? 'selected' : ''} ${preview === e.id ? 'previewed' : ''}" data-id="${e.id}" tabindex="0" role="group" aria-label="${esc(e.name)}">
+    <label class="check"><input type="checkbox" data-select="${e.id}" aria-label="Выбрать ${esc(e.name)}" ${selected.has(e.id) ? 'checked' : ''}></label>
+    <button class="file-name" data-open="${e.id}">${thumbnail ? `<span class="file-thumbnail"><img src="${thumbnailURL}" alt="" loading="lazy"></span>` : fileIcon(e)}<span class="file-label">${esc(e.name)}<small>${subtitle}</small></span>${e.shared ? icon('link','shared-mark') : ''}</button>
+    ${card ? `<span class="folder-number" aria-hidden="true">${String(index + 1).padStart(2,'0')}</span>` : `<span class="size-col">${e.kind === 'folder' ? '—' : fmt(e.size)}</span><span class="date-col">${date(e.modified)}</span>`}
+    <button class="icon-button row-more" data-more="${e.id}" aria-label="Действия: ${esc(e.name)}">${icon('ellipsis')}</button>
+  </div>`;
+}
+function uploadHTML() {
+  if (!uploadState) return '';
+  const saving = uploadState.status === 'saving', failed = uploadState.status === 'error';
+  return `<section class="upload-status ${failed ? 'upload-error' : ''}" aria-label="Загрузки" aria-live="polite" aria-busy="${saving}">
+    <span class="upload-symbol">${icon(saving ? 'upload' : failed ? 'circle-alert' : 'check')}</span>
+    <div class="upload-copy"><strong>${saving ? 'Сохраняем в ваш архив' : failed ? 'Не удалось сохранить файлы' : 'Всё на своём месте'}</strong><span>${uploadState.files.length} ${plural(uploadState.files.length,'файл','файла','файлов')} · ${fmt(uploadState.files.reduce((sum, file) => sum + file.size, 0))}</span><p>${esc(uploadState.files.map(file => file.name).join(' · '))}</p></div>
+    <span class="upload-label">${saving ? 'Загрузка' : failed ? 'Ошибка' : 'Сохранено'}</span>
+    ${saving ? '<span class="upload-progress" aria-hidden="true"></span>' : `<button class="icon-button" data-action="dismiss-upload" aria-label="Скрыть загрузки">${icon('x')}</button>`}
+  </section>`;
+}
+function profileHTML(used, count) {
+  return `<div class="profile-layout"><section class="profile-card"><div class="profile-card-heading">${avatarHTML('profile-avatar')}<div><span class="eyebrow">ВЛАДЕЛЕЦ АРХИВА</span><h2>${esc(profile.name)}</h2><span class="profile-status">${serverStorage?'Личное хранилище на сервере':'Личное пространство · это устройство'}</span></div></div><p>${esc(profile.bio)||'Архив, в котором всё по-вашему.'}</p><button class="button primary" data-action="edit-profile">${icon('settings-2')}Настроить профиль</button><p class="field-note">Имя, название архива, фото, цвет и анимации.</p></section><section class="archive-card"><span class="eyebrow">ВАША КОЛЛЕКЦИЯ</span><h2>${esc(profile.collection||'Мой архив')}</h2><div class="archive-stat"><span>${fmt(used)}</span><small>занято файлами</small></div><dl class="info-list"><div><dt>Файлы в архиве</dt><dd>${count}</dd></div><div><dt>Папки</dt><dd>${active().filter(e=>e.kind==='folder').length}</dd></div><div><dt>Хранение</dt><dd>${serverStorage?'На сервере':'В этом браузере'}</dd></div></dl><div class="profile-note">${icon('hard-drive')}<p>${serverStorage?'Файлы доступны с ваших устройств после входа. Корзина тоже занимает место.':'Очистка данных сайта удалит архив. Корзина тоже занимает место.'}</p></div><button class="text-link" data-action="storage">О хранилище ${icon('arrow-up-right')}</button></section></div>`;
+}
 function render() {
   disposePythonRunner();
-  const viewKey=`${page}:${folder}:${view}`, animateView=viewKey!==lastViewKey;lastViewKey=viewKey;
+  const focus = document.activeElement?.dataset.select;
+  const shelfScroll = $('.folder-shelf')?.scrollLeft || 0;
   urls.forEach(URL.revokeObjectURL); urls=[];
   const list=visible(), p=get(preview), used=entries.reduce((a,e)=>a+(e.size||0),0), count=active().filter(e=>e.kind==='file').length;
-  const titles={files:'Мои файлы',links:'Общие ссылки',trash:'Корзина'};
+  const titles={files:'Мои файлы',links:'Общие ссылки',trash:'Корзина',profile:'Личный профиль'};
+  const screen = `${page}/${folder}`, entering = lastScreen !== screen;
+  const previewEntering = lastPreview !== preview;
+  lastScreen = screen; lastPreview = preview;
+  const shelf = page === 'files' && !query && view === 'list';
+  const folders = shelf ? list.filter(e => e.kind === 'folder') : [];
+  const rows = shelf ? list.filter(e => e.kind !== 'folder') : list;
+  const navigation = [['files','folder-closed','Мои файлы'],['links','link','Общие ссылки'],['trash','trash-2','Корзина']];
   $('#app').innerHTML=`<div class="layout">
-    <aside class="sidebar" id="sidebar"><a class="brand" href="#" aria-label="Личное облако, главная">${icon('cloud')}<span>Личное<span class="brand-sub">облако</span></span><span class="brand-dot"></span></a>
-    <div class="workspace-label">ЛИЧНОЕ ПРОСТРАНСТВО</div><nav aria-label="Основная навигация">${[['files','folder-closed','Мои файлы'],['links','link','Общие ссылки'],['trash','trash-2','Корзина']].map(([id,i,t])=>`<button class="nav-item ${page===id?'active':''}" data-nav="${id}">${icon(i)}<span>${t}</span>${id==='files'?`<span class="nav-count">${count}</span>`:''}</button>`).join('')}</nav>
-    <div class="sidebar-bottom"><div class="storage-heading">${icon('hard-drive')}<span>${serverStorage?'Хранилище сервера':'Хранилище браузера'}</span></div><div class="storage-value">${fmt(used)} <span>занято файлами</span></div><div class="storage-track"><span id="storage-fill"></span></div><p>${serverStorage?'Доступно с ваших устройств':'Доступно на этом устройстве'}</p><button class="storage-details" data-action="storage">Подробнее ${icon('arrow-up-right')}</button></div>
-    <button class="profile" data-action="settings" aria-label="Профиль: ${esc(profile.name)}">${avatarHTML()}<span>${esc(profile.name)}<small>${esc(profile.bio)||(serverStorage?'Личное хранилище':'Локальная версия')}</small></span>${icon('settings-2')}</button></aside>
+    <aside class="sidebar" id="sidebar"><a class="brand" href="#" aria-label="Личное облако, главная">${icon('cloud')}<span>Личное<span class="brand-sub">облако</span></span></a>
+    <div class="workspace-label">ЛИЧНЫЙ АРХИВ</div><nav aria-label="Основная навигация">${navigation.map(([id,i,t],index)=>`<button class="nav-item ${page===id?'active':''}" data-nav="${id}" ${page===id?'aria-current="page"':''}><span class="nav-index">0${index+1}</span>${icon(i)}<span>${t}</span>${id==='files'?`<span class="nav-count">${count}</span>`:''}</button>`).join('')}</nav>
+    <div class="sidebar-bottom"><div class="storage-heading">${icon('hard-drive')}<span>Ваше хранилище</span></div><div class="storage-value">${fmt(used)}</div><div class="storage-track"><span id="storage-fill"></span></div><p>${serverStorage?'Файлы на сервере':'Файлы в этом браузере'}</p><button class="storage-details" data-action="storage">О хранилище ${icon('arrow-up-right')}</button></div>
+    <button class="profile ${page==='profile'?'active':''}" data-action="settings">${avatarHTML()}<span>${esc(profile.name)}<small>Профиль и настройки</small></span>${icon('arrow-up-right')}</button></aside>
     <div class="sidebar-shade" data-action="close-nav"></div>
-    <main><header class="topbar"><button class="icon-button mobile-menu" data-action="menu" aria-label="Открыть навигацию">${icon('menu')}</button><div class="top-location">Пространство <span>/</span> <strong>${titles[page]}</strong></div><div class="top-right"><span class="local-tag"><span></span>${serverStorage?'На сервере':'На этом устройстве'}</span><button class="icon-button" data-action="help" aria-label="Помощь">${icon('circle-help')}</button><button class="avatar-button" data-action="settings" aria-label="Настроить профиль">${avatarHTML('small')}</button></div></header>
-    <div class="content"><div class="page-heading"><div><div class="eyebrow">ВАШЕ ЛИЧНОЕ ОБЛАКО</div><h1>${esc(page==='files' && folder ? get(folder)?.name : titles[page])}</h1><p>${page==='files'?'Всё нужное — на своём месте.':page==='links'?'Файлы, которые вы подготовили для обмена.':'Удалённые файлы можно восстановить.'}</p></div><div class="heading-actions">${page==='files'?`<button class="button secondary" data-action="new-folder">${icon('folder-plus')}<span>Новая папка</span></button><button class="button primary" data-action="upload">${icon('upload')}<span>Загрузить файлы</span></button>`:page==='trash'?`<button class="button secondary danger" data-action="empty-trash" ${list.length?'':'disabled'}>${icon('trash-2')}Очистить корзину</button>`:''}</div></div>
-    ${page==='links'?`<div class="notice">${icon('info')}<span>${serverStorage?'Здесь файлы с действующими публичными ссылками. Управляйте доступом через «Поделиться».':'Публичные ссылки появятся после подключения сервера. Здесь можно подготовить список файлов для обмена.'}</span></div>`:''}
+    <main><header class="topbar"><button class="icon-button mobile-menu" data-action="menu" aria-label="Открыть навигацию" aria-controls="sidebar" aria-expanded="false">${icon('menu')}</button><div class="top-location">${esc(profile.collection||'Мой архив')} <span>/</span> <strong>${titles[page]}</strong></div><div class="top-right"><span class="local-tag"><span></span>${serverStorage?'На сервере':'На этом устройстве'}</span><button class="icon-button" data-action="help" aria-label="Помощь">${icon('circle-help')}</button><button class="avatar-button" data-action="settings" aria-label="Открыть профиль">${avatarHTML('small')}</button></div></header>
+    <div class="content ${entering?'entering':''}"><div class="page-heading"><div><div class="eyebrow">${page==='files'?'БЕРЕЖНО СОБРАНО':page==='links'?'ЧТОБЫ ПОДЕЛИТЬСЯ':page==='profile'?'ВАШЕ ЛИЧНОЕ ПРОСТРАНСТВО':'МОЖНО ВЕРНУТЬ'}</div><h1>${esc(page==='files' && folder ? get(folder)?.name : titles[page])}</h1><p>${page==='files'?'Всё важное. На своём месте.':page==='links'?'То, чем хочется поделиться.':page==='profile'?'Архив, в котором всё по-вашему.':'Удалённое — ещё не потерянное.'}</p></div><div class="heading-actions">${page==='files'?`<button class="button secondary" data-action="new-folder">${icon('folder-plus')}<span>Новая папка</span></button><button class="button primary" data-action="upload" ${uploadState?.status==='saving'?'disabled':''}>${icon('upload')}<span>Загрузить файлы</span></button>`:page==='trash'?`<button class="button secondary danger" data-action="empty-trash" ${list.length?'':'disabled'}>${icon('trash-2')}Очистить корзину</button>`:''}</div></div>
+    ${page==='profile'?profileHTML(used,count):`
+    ${page==='links'?`<div class="notice">${icon('link')}<div><strong>Подготовлено к обмену</strong><p>${serverStorage?'Здесь файлы с действующими публичными ссылками. Управляйте доступом через «Поделиться».':'Пока файлы доступны на этом устройстве. Скачайте их, чтобы отправить; публичные ссылки появятся после подключения сервера.'}</p></div></div>`:''}
+    ${page==='files'?uploadHTML():''}
     <div class="file-toolbar"><label class="search">${icon('search')}<input id="search" placeholder="Поиск файлов и папок" aria-label="Поиск файлов и папок" value="${esc(query)}" autocomplete="off">${query?`<button class="icon-button" data-action="clear-search" aria-label="Очистить поиск">${icon('x')}</button>`:`<kbd>/</kbd>`}</label><div class="toolbar-right"><button class="sort-button" data-action="sort">${icon('arrow-down-up')}<span>${sort==='name'?'По названию':sort==='size'?'По размеру':'По дате'}</span>${icon('chevron-down')}</button><div class="view-toggle"><button class="icon-button ${view==='list'?'on':''}" data-view="list" aria-label="Список" aria-pressed="${view==='list'}">${icon('list')}</button><button class="icon-button ${view==='grid'?'on':''}" data-view="grid" aria-label="Плитки" aria-pressed="${view==='grid'}">${icon('layout-grid')}</button></div></div></div>
     <div class="breadcrumb"><button data-folder="">${icon('house')}<span>${page==='files'?'Все файлы':titles[page]}</span></button>${page==='files'?ancestors(folder).map(e=>`${icon('chevron-right')}<button data-folder="${e.id}">${esc(e.name)}</button>`).join(''):''}<span class="item-count">${list.length} ${plural(list.length,'элемент','элемента','элементов')}${query?' найдено':''}</span></div>
-    <div class="files-area ${animateView?'view-enter':''} ${p?'with-preview':''}"><section class="file-panel" aria-label="Файлы"><div class="table-head"><label class="check"><input type="checkbox" id="select-all" aria-label="Выбрать все файлы" ${list.length&&list.every(e=>selected.has(e.id))?'checked':''}></label><button data-sort="name">Название ${icon(sort==='name'&&!ascending?'arrow-down':'arrow-up')}</button><button class="size-col" data-sort="size">Размер</button><button class="date-col" data-sort="modified">Изменено</button><span></span></div><div class="file-items ${view}">${list.map(e=>`<div class="file-row ${selected.has(e.id)?'selected':''} ${preview===e.id?'previewed':''}" data-id="${e.id}" tabindex="0" role="group" aria-label="${esc(e.name)}"><label class="check"><input type="checkbox" data-select="${e.id}" aria-label="Выбрать ${esc(e.name)}" ${selected.has(e.id)?'checked':''}></label><button class="file-name" data-open="${e.id}">${fileIcon(e)}<span class="file-label">${esc(e.name)}<small>${e.kind==='folder'?'Папка':fmt(e.size)}</small></span>${e.shared?icon('link','shared-mark'):''}</button><span class="size-col">${e.kind==='folder'?'—':fmt(e.size)}</span><span class="date-col">${date(e.modified)}</span><button class="icon-button row-more" data-more="${e.id}" aria-label="Действия: ${esc(e.name)}">${icon('ellipsis')}</button></div>`).join('')||`<div class="empty">${icon(query?'search-x':page==='trash'?'trash-2':page==='links'?'link':'folder-open')}<h2>${query?'Ничего не найдено':page==='trash'?'Корзина пуста':page==='links'?'Пока нет файлов для обмена':'Здесь пока пусто'}</h2><p>${query?'Попробуйте другое название.':page==='trash'?'Удалённые файлы появятся здесь.':page==='links'?'Выберите файл и нажмите «Поделиться».':'Загрузите файлы или создайте первую папку.'}</p>${page==='files'&&!query?'<button class="button secondary" data-action="upload">Загрузить файлы</button>':''}</div>`}</div><div class="drop-hint">${icon('upload-cloud')}<span>Перетащите файлы сюда для загрузки</span></div></section>${p?previewHTML(p):''}</div>
-    <footer class="content-footer"><span>${icon('hard-drive')} ${serverStorage?'Файлы хранятся на сервере':'Файлы хранятся в этом браузере'}</span><button data-action="help">Как это работает ${icon('arrow-up-right')}</button></footer></div>
-    ${selected.size?`<div class="selection-bar"><button class="icon-button" data-action="deselect" aria-label="Снять выделение">${icon('x')}</button><span class="selection-count">Выбрано: <strong>${selected.size}</strong></span><div class="selection-actions">${page==='trash'?`<button data-action="restore">${icon('rotate-ccw')}<span>Восстановить</span></button><button class="danger" data-action="delete">${icon('trash-2')}<span>Удалить навсегда</span></button>`:`<button data-action="download">${icon('download')}<span>Скачать</span></button><button data-action="share">${icon('link')}<span>Поделиться</span></button><button data-action="move">${icon('folder-input')}<span>Переместить</span></button><button data-action="trash">${icon('trash-2')}<span>В корзину</span></button>`}</div></div>`:''}
-    </main></div><input id="file-input" type="file" multiple hidden><div id="overlay-root"></div><div id="toast-root" role="status" aria-live="polite"></div><div id="drop-overlay">${icon('upload-cloud')}<h2>Отпустите файлы для загрузки</h2><p>В текущую папку</p></div>`;
-  bind(); createIcons({icons});
+    <div class="files-area ${p?'with-preview':''}"><section class="file-panel" aria-label="Файлы">
+    ${folders.length?`<div class="folder-shelf" aria-label="Папки">${folders.map((e,index)=>entryHTML(e,index,true)).join('')}</div>`:''}
+    <div class="collection-heading"><span>${query?'Результаты поиска':page==='links'?'Для обмена':page==='trash'?'Удалённые элементы':view==='grid'?'Вся коллекция':'Файлы'}</span><span>${String(rows.length).padStart(2,'0')}</span></div>
+    <div class="table-head ${view==='grid'?'grid-head':''}"><label class="check"><input type="checkbox" id="select-all" aria-label="Выбрать все файлы" ${list.length&&list.every(e=>selected.has(e.id))?'checked':''}></label><button data-sort="name">Название ${icon(sort==='name'&&!ascending?'arrow-down':'arrow-up')}</button><button class="size-col" data-sort="size">Размер</button><button class="date-col" data-sort="modified">Изменено</button><span></span></div>
+    <div class="file-items ${view}">${rows.map((e,index)=>entryHTML(e,index)).join('')||(!list.length?`<div class="empty">${icon(query?'search-x':page==='trash'?'trash-2':page==='links'?'link':'folder-open')}<h2>${query?'Ничего не найдено':page==='trash'?'Корзина пуста':page==='links'?'Пока нет файлов для обмена':'Здесь пока пусто'}</h2><p>${query?'Попробуйте другое название.':page==='trash'?'Пусть важное остаётся в архиве.':page==='links'?'Выберите файл и нажмите «Поделиться».':'У каждого архива есть начало. Добавьте первые файлы.'}</p>${page==='files'&&!query?'<button class="button secondary" data-action="upload">Загрузить файлы</button>':''}</div>`:'<div class="empty-inline">В этой папке пока нет файлов.</div>')}</div>
+    ${page==='files'?`<button class="drop-hint" data-action="upload">${icon('upload-cloud')}<span>Перетащите файлы сюда <small>или выберите на устройстве</small></span>${icon('arrow-up-right')}</button>`:''}</section>${p?previewHTML(p,previewEntering):''}</div>`}
+    <footer class="content-footer"><span>${icon('hard-drive')} ${serverStorage?'Ваш архив хранится на сервере':'Ваш архив хранится в этом браузере'}</span><button data-action="help">Как это работает ${icon('arrow-up-right')}</button></footer></div>
+    ${selected.size?`<div class="selection-bar"><button class="icon-button" data-action="deselect" aria-label="Снять выделение">${icon('x')}</button><span class="selection-count">Выбрано: <strong>${selected.size}</strong></span><div class="selection-actions">${page==='trash'?`<button data-action="restore" aria-label="Восстановить">${icon('rotate-ccw')}<span>Восстановить</span></button><button class="danger" data-action="delete" aria-label="Удалить навсегда">${icon('trash-2')}<span>Удалить навсегда</span></button>`:`<button data-action="download" aria-label="Скачать">${icon('download')}<span>Скачать</span></button><button data-action="share" aria-label="Поделиться">${icon('link')}<span>Поделиться</span></button><button data-action="move" aria-label="Переместить">${icon('folder-input')}<span>Переместить</span></button><button data-action="trash" aria-label="В корзину">${icon('trash-2')}<span>В корзину</span></button>`}</div></div>`:''}
+    </main><nav class="mobile-dock" aria-label="Мобильная навигация">${navigation.map(([id,i,t])=>`<button data-mobile-nav="${id}" class="${page===id?'active':''}" ${page===id?'aria-current="page"':''}>${icon(i)}<span>${id==='files'?'Файлы':id==='links'?'Ссылки':t}</span></button>`).join('')}<button data-action="settings" class="${page==='profile'?'active':''}" ${page==='profile'?'aria-current="page"':''}>${icon('settings-2')}<span>Профиль</span></button></nav></div>
+    <input id="file-input" type="file" multiple hidden><div id="overlay-root"></div><div id="toast-root" role="status" aria-live="polite"></div><div id="drop-overlay">${icon('upload-cloud')}<span class="eyebrow">ДОБАВИТЬ В АРХИВ</span><h2>Отпустите файлы</h2><p>${esc(get(folder)?.name||'Все файлы')}</p></div>`;
+  bind(); createIcons({icons}); syncPreviewMode();
+  if(!entering && $('.folder-shelf')) $('.folder-shelf').scrollLeft = shelfScroll;
+  if(focus) $(`[data-select="${focus}"]`)?.focus({preventScroll:true});
   (serverStorage ? Promise.resolve({quota:serverQuota}) : navigator.storage?.estimate()).then(({quota})=>{const fill=$('#storage-fill');if(fill)fill.style.width=`${quota?Math.min(100,used/quota*100):0}%`;}).catch(()=>{});
 }
 function plural(n,a,b,c) {return n%10===1&&n%100!==11?a:n%10>=2&&n%10<=4&&(n%100<12||n%100>14)?b:c;}
-function previewHTML(e) {
+function previewHTML(e, entering = false) {
  let media='';
  if(e.blob || (serverStorage && e.kind==='file')) { const u=serverStorage?serverFile(e):objectURL(e.blob); media=e.mime?.startsWith('image/')?`<img src="${u}" alt="${esc(e.name)}">`:e.mime?.startsWith('video/')?`<video controls src="${u}"></video>`:e.mime?.startsWith('audio/')?`<audio controls src="${u}"></audio>`:e.mime==='application/pdf'?`<iframe src="${u}" title="${esc(e.name)}"></iframe>`:isText(e)?'<pre id="text-preview">Загрузка…</pre>'+(isPython(e)?'<div id="python-runner"></div>':''):`<div class="unsupported">${fileIcon(e)}<p>Предпросмотр недоступен.<br>Скачайте файл, чтобы открыть его.</p></div>`; }
- return `<aside class="preview-panel" aria-label="Предпросмотр"><div class="preview-heading"><span>ПРЕДПРОСМОТР</span><button class="icon-button" data-action="close-preview" aria-label="Закрыть предпросмотр">${icon('x')}</button></div><div class="preview-media">${media}</div><h2>${esc(e.name)}</h2><span class="file-type">${esc(e.mime||'Файл')}</span><dl><div><dt>Размер</dt><dd>${fmt(e.size)}</dd></div><div><dt>Изменено</dt><dd>${date(e.modified)}</dd></div><div><dt>Расположение</dt><dd>${esc(get(e.parent)?.name||'Все файлы')}</dd></div></dl><button class="button primary full" data-download="${e.id}">${icon('download')}Скачать файл</button>${!e.deleted?`<button class="button secondary full" data-share="${e.id}">${icon('link')}Поделиться</button>`:''}</aside>`;
+ return `<aside class="preview-panel ${entering ? 'is-entering' : ''}" aria-label="Предпросмотр" tabindex="-1"><div class="preview-heading"><span>КАРТОЧКА ФАЙЛА</span><button class="icon-button" data-action="close-preview" aria-label="Закрыть предпросмотр">${icon('x')}</button></div><div class="preview-media">${media}</div><h2>${esc(e.name)}</h2><span class="file-type">${esc(fileType(e))}</span><dl><div><dt>Размер</dt><dd>${fmt(e.size)}</dd></div><div><dt>Изменено</dt><dd>${date(e.modified)}</dd></div><div><dt>Расположение</dt><dd>${esc(get(e.parent)?.name||'Все файлы')}</dd></div></dl><button class="button primary full" data-download="${e.id}">${icon('download')}Скачать файл</button>${!e.deleted?`<button class="button secondary full" data-share="${e.id}">${icon('link')}Поделиться</button>`:''}</aside>`;
 }
 function bind() {
- document.querySelectorAll('[data-nav]').forEach(b=>b.onclick=()=>nav(b.dataset.nav));
+ document.querySelectorAll('[data-nav],[data-mobile-nav]').forEach(b=>b.onclick=()=>nav(b.dataset.nav||b.dataset.mobileNav));
  $('.brand').onclick=e=>{e.preventDefault();nav('files');};
+ $('.sidebar').onkeydown = event => {
+   if(!$('.layout').classList.contains('nav-open') || event.key !== 'Tab') return;
+   const controls = [...$('.sidebar').querySelectorAll('a[href],button')], first=controls[0], last=controls.at(-1);
+   if(event.shiftKey && document.activeElement===first) { event.preventDefault(); last.focus(); }
+   else if(!event.shiftKey && document.activeElement===last) { event.preventDefault(); first.focus(); }
+ };
  document.querySelectorAll('[data-action]').forEach(b=>b.onclick=e=>action(b.dataset.action,e));
  document.querySelectorAll('[data-folder]').forEach(b=>b.onclick=()=>openFolder(b.dataset.folder||null));
  document.querySelectorAll('[data-view]').forEach(b=>b.onclick=()=>{view=b.dataset.view;render();});
@@ -115,19 +170,40 @@ function bind() {
  document.querySelectorAll('[data-download]').forEach(b=>b.onclick=()=>download([b.dataset.download]));
  document.querySelectorAll('[data-share]').forEach(b=>b.onclick=()=>share([b.dataset.share]));
  document.querySelectorAll('.file-row').forEach(r=>{r.oncontextmenu=e=>{e.preventDefault();context(e,r.dataset.id);};r.onkeydown=e=>{if(e.target===r&&e.key==='Enter')openEntry(r.dataset.id);};});
- $('#select-all').onchange=e=>{visible().forEach(x=>e.target.checked?selected.add(x.id):selected.delete(x.id));render();};
- $('#search').oninput=e=>{const pos=e.target.selectionStart;query=e.target.value;selected.clear();render();$('#search').focus();$('#search').setSelectionRange(pos,pos);};
+ if($('#select-all')) $('#select-all').onchange=e=>{visible().forEach(x=>e.target.checked?selected.add(x.id):selected.delete(x.id));render();};
+ if($('#search')) $('#search').oninput=e=>{const pos=e.target.selectionStart;query=e.target.value;selected.clear();render();$('#search').focus();$('#search').setSelectionRange(pos,pos);};
  $('#file-input').onchange=e=>upload([...e.target.files]);
  const p=get(preview); if($('#text-preview')&&p&&(p.blob||serverStorage)) (serverStorage?serverText(p):p.blob.slice(0,200000).text()).then(t=>{if(preview===p.id&&$('#text-preview')){$('#text-preview').textContent=t+(p.size>200000?'\n… Показаны первые 200 КБ':'');if(isPython(p)&&$('#python-runner'))mountPythonRunner($('#python-runner'),t,p.size<=100000);}}).catch(()=>{if($('#text-preview'))$('#text-preview').textContent='Не удалось загрузить предпросмотр';});
 }
-function openEntry(id) {if(serverStorage&&saving)return toast('Дождитесь завершения загрузки.');const e=get(id);if(e.kind==='folder'){if(e.deleted)return toast('Сначала восстановите папку');openFolder(id);}else{preview=id;render();}}
+function openEntry(id) {if(serverStorage&&saving)return toast('Дождитесь завершения загрузки.');const e=get(id);if(e.kind==='folder'){if(e.deleted)return toast('Сначала восстановите папку');openFolder(id);}else{preview=id;render();if(mobileViewport.matches) $('[data-action="close-preview"]').focus();}}
+function syncPreviewMode() {
+ const panel = $('.preview-panel'), isModal = Boolean(panel && mobileViewport.matches);
+ for(const element of document.querySelectorAll('.sidebar,.sidebar-shade,.topbar,.page-heading,.notice,.upload-status,.file-toolbar,.breadcrumb,.file-panel,.content-footer,.mobile-dock,.selection-bar')) element.inert = isModal;
+ if(!mobileViewport.matches) { $('.layout').classList.remove('nav-open'); $('.mobile-menu').setAttribute('aria-expanded','false'); }
+ const drawerOpen = mobileViewport.matches && $('.layout').classList.contains('nav-open');
+ $('.sidebar').inert = isModal || (mobileViewport.matches && !drawerOpen);
+ $('main').inert = drawerOpen;
+ $('.mobile-dock').inert = isModal || drawerOpen;
+ if(isModal && !panel.contains(document.activeElement)) $('[data-action="close-preview"]').focus({preventScroll:true});
+ if(!panel) return;
+ if(isModal) { panel.setAttribute('role','dialog'); panel.setAttribute('aria-modal','true'); }
+ else { panel.removeAttribute('role'); panel.removeAttribute('aria-modal'); }
+ panel.onkeydown = event => {
+   if(!mobileViewport.matches || event.key !== 'Tab') return;
+   const controls = [...panel.querySelectorAll('button,input,select,textarea,a[href],video,audio,iframe,[tabindex]')].filter(el => el.tabIndex >= 0);
+   const first = controls[0], last = controls.at(-1);
+   if(event.shiftKey && document.activeElement === first) { event.preventDefault(); last?.focus(); }
+   else if(!event.shiftKey && document.activeElement === last) { event.preventDefault(); first?.focus(); }
+ };
+}
+mobileViewport.addEventListener('change', syncPreviewMode);
 function setSort(key){ascending=sort===key?!ascending:true;sort=key;render();}
 function action(a,event) {
  const ids=[...selected];
  if(a==='upload')$('#file-input').click();
  if(a==='new-folder')nameDialog();
  if(a==='deselect'){selected.clear();render();}
- if(a==='close-preview'){preview=null;render();}
+ if(a==='close-preview'){const previous=preview;preview=null;render();$(`[data-open="${previous}"]`)?.focus({preventScroll:true});}
  if(a==='download')download(ids);
  if(a==='share')share(ids);
  if(a==='move')moveDialog(ids);
@@ -136,10 +212,19 @@ function action(a,event) {
  if(a==='delete')deleteDialog(ids);
  if(a==='empty-trash')deleteDialog(entries.filter(e=>e.deleted).map(e=>e.id));
  if(a==='clear-search'){query='';render();$('#search').focus();}
- if(a==='menu')$('.layout').classList.add('nav-open');
- if(a==='close-nav')$('.layout').classList.remove('nav-open');
+ if(a==='menu') {
+   $('.layout').classList.add('nav-open'); $('.sidebar').inert=false; $('main').inert=true; $('.mobile-dock').inert=true;
+   $('.mobile-menu').setAttribute('aria-expanded','true'); ($('.sidebar [aria-current="page"]') || $('.sidebar .profile')).focus({preventScroll:true});
+ }
+
+ if(a==='close-nav') {
+   $('.layout').classList.remove('nav-open'); $('main').inert=false; syncPreviewMode();
+   $('.mobile-menu').setAttribute('aria-expanded','false'); $('.mobile-menu').focus({preventScroll:true});
+ }
  if(a==='sort')menu(event,[['name','По названию','a-arrow-down'],['modified','По дате изменения','calendar'],['size','По размеру','hard-drive']].map(([k,l,i])=>({label:l,icon:i,run:()=>setSort(k)})));
- if(a==='settings')profileDialog();
+ if(a==='dismiss-upload'){uploadState=null;render();}
+ if(a==='settings')nav('profile');
+ if(a==='edit-profile')profileDialog();
  if(['help','storage'].includes(a))infoDialog(a);
 }
 function toast(message,error=false) {const root=$('#toast-root');root.innerHTML=`<div class="toast ${error?'error':''}">${icon(error?'circle-alert':'check')}${esc(message)}</div>`;createIcons({icons});setTimeout(()=>{if(!saving)root.replaceChildren();},4500);}
@@ -149,8 +234,8 @@ function modal(title,body,buttons,setup,onClose) {
  const close=()=>{$('#overlay-root').replaceChildren();previous?.focus();onClose?.();};
  document.querySelectorAll('[data-close]').forEach(b=>b.onclick=close);
  $('.modal-backdrop').onclick=e=>{if(e.target===e.currentTarget)close();};
- $('.modal').onkeydown=e=>{if(e.key==='Escape')close();if(e.key==='Tab'){const els=[...$('.modal').querySelectorAll('button:not(:disabled),input,select,a[href]')];const first=els[0],last=els.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}};
- setup?.(close);createIcons({icons});setTimeout(()=>($('.modal input')||$('.modal button'))?.focus(),0);
+ $('.modal').onkeydown=e=>{if(e.key==='Escape'){e.preventDefault();e.stopPropagation();close();}if(e.key==='Tab'){const els=[...$('.modal').querySelectorAll('button:not(:disabled),input:not([hidden]),select,a[href]')];const first=els[0],last=els.at(-1);if(e.shiftKey&&document.activeElement===first){e.preventDefault();last.focus();}else if(!e.shiftKey&&document.activeElement===last){e.preventDefault();first.focus();}}};
+ setup?.(close);createIcons({icons});($('.modal input:not([hidden])')||$('.modal button'))?.focus();
 }
 function nameDialog(id) {
  const e=get(id);
@@ -163,7 +248,14 @@ async function upload(files) {
  if(page!=='files')return toast('Откройте «Мои файлы» для загрузки');
  if(!files.length)return;
  if(serverStorage) { if(!uploadQueue||saving)return toast('Дождитесь сохранения.'); return uploadQueue.add(files,folder); }
- await change(()=>files.forEach(file=>entries.push({id:uid(),name:uniqueName(file.name,folder),kind:'file',parent:folder,modified:Date.now(),size:file.size,mime:file.type,blob:file})),`Загружено файлов: ${files.length}`);
+ if(uploadState?.status==='saving')return toast('Дождитесь завершения текущей загрузки');
+ const destination = folder;
+ uploadState={status:'saving',files:files.map(file=>({name:file.name,size:file.size}))};
+ render();
+ const saved=await change(()=>files.forEach(file=>entries.push({id:uid(),name:uniqueName(file.name,destination),kind:'file',parent:destination,modified:Date.now(),size:file.size,mime:file.type,blob:file})));
+ uploadState.status=saved?'done':'error'; render();
+ if(saved)toast(`Загружено файлов: ${files.length}`);
+ else toast('Не удалось сохранить. Возможно, хранилище браузера заполнено.',true);
 }
 function download(ids) {const files=ids.map(get).filter(e=>e?.blob||(serverStorage&&e?.kind==='file'));if(!files.length)return toast('Откройте папку и выберите файлы для скачивания');for(const e of files){const u=serverStorage?serverFile(e,true):URL.createObjectURL(e.blob),a=document.createElement('a');a.href=u;a.download=e.name;a.click();if(!serverStorage)setTimeout(()=>URL.revokeObjectURL(u),10000);}if(files.length<ids.length)toast('Скачаны файлы. Папки нужно открыть отдельно.');}
 function trash(ids) {change(()=>{entries.forEach(e=>{if(ids.some(id=>descendant(e.id,id)))e.deleted=Date.now();});selected.clear();preview=null;},'Перемещено в корзину');}
@@ -213,7 +305,7 @@ async function publicShareDialog(ids) {
 function profileDialog() {
  const draft={...profile};
  const initials=profile.name.trim().split(/\s+/).slice(0,2).map(word=>[...word][0]).join('').toLocaleUpperCase();
- modal('Ваш профиль',`<div class="profile-editor"><div class="profile-preview"><span class="avatar large" id="profile-avatar-preview">${draft.avatar?`<img src="${esc(draft.avatar)}" alt="">`:esc(initials)}</span><div><strong id="profile-preview-name">${esc(draft.name)}</strong><p id="profile-preview-bio">${esc(draft.bio)||'Ваше личное пространство'}</p></div></div><div class="avatar-actions"><label class="button secondary" for="profile-avatar-file">Выбрать фото</label><button class="button secondary" id="remove-avatar">Убрать фото</button><input type="file" id="profile-avatar-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden></div><p class="profile-note">Фото до 5 МБ · квадратный аватар · без анимации</p><label class="field-label" for="profile-name">Имя профиля</label><input class="text-input" id="profile-name" maxlength="40" value="${esc(draft.name)}"><label class="field-label" for="profile-bio">О себе</label><input class="text-input" id="profile-bio" maxlength="160" value="${esc(draft.bio)}" placeholder="Например, мои проекты и воспоминания"><fieldset class="accent-picker"><legend>Цвет акцента</legend>${Object.entries(accents).map(([key,[name,color]])=>`<label title="${name}" style="--swatch:${color}"><input type="radio" name="profile-accent" value="${key}" aria-label="${name}" ${draft.accent===key?'checked':''}><span></span></label>`).join('')}</fieldset><label class="motion-toggle"><input type="checkbox" id="profile-motion" ${draft.motion?'checked':''}> Плавные анимации</label><p class="profile-note">Системная настройка уменьшения движения имеет приоритет. Имя профиля не меняет логин cloudadmin.</p><p class="form-error" id="profile-error" role="alert"></p></div>`,`<button class="button secondary" data-close>Отмена</button><button class="button primary" id="save-profile">Сохранить профиль</button>`,close=>{
+ modal('Ваш профиль',`<div class="profile-editor"><div class="profile-preview"><span class="avatar large" id="profile-avatar-preview">${draft.avatar?`<img src="${esc(draft.avatar)}" alt="">`:esc(initials)}</span><div><strong id="profile-preview-name">${esc(draft.name)}</strong><p id="profile-preview-bio">${esc(draft.bio)||'Ваше личное пространство'}</p></div></div><div class="avatar-actions"><label class="button secondary" for="profile-avatar-file">Выбрать фото</label><button class="button secondary" id="remove-avatar">Убрать фото</button><input type="file" id="profile-avatar-file" accept="image/png,image/jpeg,image/webp,image/gif" hidden></div><p class="profile-note">Фото до 5 МБ · квадратный аватар · без анимации</p><label class="field-label" for="profile-name">Имя профиля</label><input class="text-input" id="profile-name" maxlength="40" value="${esc(draft.name)}"><label class="field-label" for="profile-collection">Название архива</label><input class="text-input" id="profile-collection" maxlength="60" value="${esc(draft.collection||'Мой архив')}"><label class="field-label" for="profile-bio">О себе</label><input class="text-input" id="profile-bio" maxlength="160" value="${esc(draft.bio)}" placeholder="Например, мои проекты и воспоминания"><fieldset class="accent-picker"><legend>Цвет акцента</legend>${Object.entries(accents).map(([key,[name,color]])=>`<label title="${name}" style="--swatch:${color}"><input type="radio" name="profile-accent" value="${key}" aria-label="${name}" ${draft.accent===key?'checked':''}><span></span></label>`).join('')}</fieldset><label class="motion-toggle"><input type="checkbox" id="profile-motion" ${draft.motion?'checked':''}> Плавные анимации</label><p class="profile-note">Системная настройка уменьшения движения имеет приоритет. Имя профиля не меняет логин cloudadmin.</p><p class="form-error" id="profile-error" role="alert"></p></div>`,`<button class="button secondary" data-close>Отмена</button><button class="button primary" id="save-profile">Сохранить профиль</button>`,close=>{
   const preview=()=>{const initials=($('#profile-name')?.value.trim()||profile.name).split(/\s+/).slice(0,2).map(word=>[...word][0]).join('').toLocaleUpperCase();const target=$('#profile-avatar-preview');if(target)target.innerHTML=draft.avatar?`<img src="${esc(draft.avatar)}" alt="">`:esc(initials);};
   $('#profile-name').oninput=()=>{$('#profile-preview-name').textContent=$('#profile-name').value.trim()||'Ваш профиль';preview();};
   $('#profile-bio').oninput=()=>{$('#profile-preview-bio').textContent=$('#profile-bio').value.trim()||'Ваше личное пространство';};
@@ -226,10 +318,10 @@ function profileDialog() {
    finally{if(save.isConnected)save.disabled=false;}
   };
   $('#save-profile').onclick=async()=>{
-   const name=$('#profile-name').value.trim(),bio=$('#profile-bio').value.trim();
-   if(!name||/[\x00-\x1f\x7f]/.test(name)||/[\x00-\x1f\x7f]/.test(bio)){ $('#profile-error').textContent='Введите имя без служебных символов.';return;}
+   const collection=$('#profile-collection').value.trim(),name=$('#profile-name').value.trim(),bio=$('#profile-bio').value.trim();
+   if(!collection||/[\x00-\x1f\x7f]/.test(collection)||!name||/[\x00-\x1f\x7f]/.test(name)||/[\x00-\x1f\x7f]/.test(bio)){ $('#profile-error').textContent='Введите имя без служебных символов.';return;}
    const button=$('#save-profile');button.disabled=true;$('#profile-error').textContent='';
-   try {await saveProfile({...draft,name,bio,accent:$('input[name="profile-accent"]:checked').value,motion:$('#profile-motion').checked});close();render();toast('Профиль сохранён');}
+   try {await saveProfile({...draft,name,bio,collection,accent:$('input[name="profile-accent"]:checked').value,motion:$('#profile-motion').checked});close();render();toast('Профиль сохранён');}
    catch(error){if($('#profile-error'))$('#profile-error').textContent=error.message;}
    finally{if(button.isConnected)button.disabled=false;}
   };
@@ -250,12 +342,21 @@ function context(event,id) {
  {label:'В корзину',icon:'trash-2',danger:true,run:()=>trash(ids)}]);
 }
 function menu(event,items) {
- $('.context-menu')?.remove();const el=document.createElement('div');el.className='context-menu';el.setAttribute('role','menu');el.innerHTML=items.map((x,i)=>`<button role="menuitem" class="${x.danger?'danger':''}" data-menu-index="${i}">${icon(x.icon)}${x.label}</button>`).join('');document.body.append(el);const rect=event.currentTarget?.getBoundingClientRect();const x=event.type==='contextmenu'?event.clientX:rect?.right||event.clientX,y=event.type==='contextmenu'?event.clientY:rect?.bottom||event.clientY;el.style.left=`${Math.max(8,Math.min(x-200,innerWidth-220))}px`;el.style.top=`${Math.max(8,Math.min(y+5,innerHeight-el.offsetHeight-10))}px`;el.querySelectorAll('button').forEach((b,i)=>b.onclick=()=>{el.remove();items[i].run();});el.onkeydown=e=>{const bs=[...el.querySelectorAll('button')];let i=bs.indexOf(document.activeElement);if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();bs[(i+(e.key==='ArrowDown'?1:bs.length-1))%bs.length].focus();}if(e.key==='Escape'){el.remove();event.currentTarget?.focus();}};createIcons({icons});el.querySelector('button').focus();setTimeout(()=>document.addEventListener('click',function dismiss(e){if(!el.contains(e.target)){el.remove();document.removeEventListener('click',dismiss);}}, {capture:true}),0);
+ $('.context-menu')?.remove();const el=document.createElement('div');el.className='context-menu';el.setAttribute('role','menu');el.innerHTML=items.map((x,i)=>`<button role="menuitem" class="${x.danger?'danger':''}" data-menu-index="${i}">${icon(x.icon)}${x.label}</button>`).join('');document.body.append(el);const rect=event.currentTarget?.getBoundingClientRect();const x=event.type==='contextmenu'?event.clientX:rect?.right||event.clientX,y=event.type==='contextmenu'?event.clientY:rect?.bottom||event.clientY;el.style.left=`${Math.max(8,Math.min(x-200,innerWidth-220))}px`;el.style.top=`${Math.max(8,Math.min(y+5,innerHeight-el.offsetHeight-10))}px`;el.querySelectorAll('button').forEach((b,i)=>b.onclick=()=>{el.remove();items[i].run();});el.onkeydown=e=>{const bs=[...el.querySelectorAll('button')];let i=bs.indexOf(document.activeElement);if(e.key==='ArrowDown'||e.key==='ArrowUp'){e.preventDefault();bs[(i+(e.key==='ArrowDown'?1:bs.length-1))%bs.length].focus();}if(e.key==='Escape'){e.preventDefault();e.stopPropagation();el.remove();event.currentTarget?.focus();}};createIcons({icons});el.querySelector('button').focus();setTimeout(()=>document.addEventListener('click',function dismiss(e){if(!el.contains(e.target)){el.remove();document.removeEventListener('click',dismiss);}}, {capture:true}),0);
 }
 let dragDepth=0;
 document.addEventListener('dragenter',e=>{if(e.dataTransfer?.types.includes('Files')){e.preventDefault();dragDepth++;if(page==='files')$('#drop-overlay')?.classList.add('show');}});
 document.addEventListener('dragover',e=>{if(e.dataTransfer?.types.includes('Files'))e.preventDefault();});
 document.addEventListener('dragleave',()=>{if(--dragDepth<=0){dragDepth=0;$('#drop-overlay')?.classList.remove('show');}});
 document.addEventListener('drop',e=>{e.preventDefault();dragDepth=0;$('#drop-overlay')?.classList.remove('show');upload([...e.dataTransfer.files]);});
-document.addEventListener('keydown',e=>{if(e.key==='Escape'){if($('.modal'))return;$('.context-menu')?.remove();$('.layout')?.classList.remove('nav-open');selected.clear();preview=null;render();}if(e.key==='/'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)&&!$('.modal')){e.preventDefault();$('#search')?.focus();}});
+document.addEventListener('keydown',event=>{
+ if(event.key==='Escape') {
+   if($('.modal'))return;
+   if($('.layout')?.classList.contains('nav-open')) { event.preventDefault(); action('close-nav'); return; }
+   if($('.context-menu')) { $('.context-menu').remove(); return; }
+   if(preview) { event.preventDefault(); action('close-preview'); }
+   else if(selected.size) { selected.clear(); render(); }
+ }
+ if(event.key==='/'&&!['INPUT','TEXTAREA','SELECT'].includes(document.activeElement.tagName)&&!$('.modal')&&page!=='profile'&&!$('.preview-panel[aria-modal="true"]')&&!$('.layout.nav-open')) { event.preventDefault(); $('#search')?.focus(); }
+});
 init().catch(()=>{$('#app').innerHTML=`<div class="fatal"><h1>${serverStorage?'Серверное хранилище недоступно':'Хранилище браузера недоступно'}</h1><p>${serverStorage?'Проверьте подключение и обновите страницу.':'Разрешите хранение данных сайта и обновите страницу.'}</p><button onclick="location.reload()">Попробовать снова</button></div>`;});

@@ -26,8 +26,8 @@ curl -fSL "$url/deploy/server-dist.tar.gz" -o "$backup/server-dist.tar.gz"
 curl -fSL "$url/deploy/public-shares.conf" -o "$backup/public-shares.conf"
 curl -fSL "$url/deploy/python-runtime.conf" -o "$backup/python-runtime.conf"
 cp -p /etc/nginx/snippets/hxry-cloud.conf "$backup/snippet.conf"
-printf '%s  %s\n' '966f3daf8f9d3db9354c899a731b9e66e4f3a97831be1c7a35eeab4219058ece' "$backup/server.py" | sha256sum -c -
-printf '%s  %s\n' '984938a323b0a630470c97f36cf013f5ff8ec8c26058aafc1b07aaf74c7da97c' "$backup/server-dist.tar.gz" | sha256sum -c -
+printf '%s  %s\n' 'd61c3612c706f7814bd77040d061c5f018cfea52ababb21d39f8b1e34aa8d29a' "$backup/server.py" | sha256sum -c -
+printf '%s  %s\n' '3d6046be057b0f8ceb979dba0987f2c433b445ff788ccadc1c823abe226e04bc' "$backup/server-dist.tar.gz" | sha256sum -c -
 python3 - "$backup/server-dist.tar.gz" <<'PY'
 import pathlib,sys,tarfile
 with tarfile.open(sys.argv[1]) as archive:

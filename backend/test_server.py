@@ -224,12 +224,12 @@ class StorageTests(unittest.TestCase):
 
     def test_profile_persistence_conflict_and_validation(self):
         state=json.loads(self.request('GET','/profile')[2])
-        settings={**state['profile'],'name':'Мой профиль','bio':'Проекты','accent':'mint','motion':False}
+        settings={**state['profile'],'name':'Мой профиль','bio':'Проекты','collection':'Тихий архив','accent':'copper','motion':False}
         self.assertEqual(self.request('PUT','/profile',{'version':0,'profile':settings})[0],200)
         self.assertEqual(self.request('PUT','/profile',{'version':0,'profile':settings})[0],409)
         self.server.store=Store(self.temp.name,'test-token',reserve=0)
         self.assertEqual(json.loads(self.request('GET','/profile')[2])['profile'],settings)
-        for bad in ({'avatar':'data:image/svg+xml,<svg/>'},{'name':''},{'accent':'url(evil)'},{'avatar':'data:image/png;base64,wrong'}):
+        for bad in ({'collection':''},{'collection':'x'*61},{'collection':'bad\nname'},{'avatar':'data:image/svg+xml,<svg/>'},{'name':''},{'accent':'url(evil)'},{'avatar':'data:image/png;base64,wrong'}):
             self.assertEqual(self.request('PUT','/profile',{'version':1,'profile':{**settings,**bad}})[0],400)
         self.assertEqual(self.request('GET','/profile',auth=False)[0],403)
 

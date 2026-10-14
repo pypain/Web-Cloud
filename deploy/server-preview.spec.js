@@ -86,9 +86,11 @@ test('fast connections use larger chunks and fewer requests', async ({page})=>{
 });
 test('profile customizations persist across browsers and respect reduced motion',async({browser,page})=>{
   await page.goto('/cloud/');
+  await page.getByLabel('Открыть профиль',{exact:true}).click();
   await page.getByRole('button',{name:'Настроить профиль',exact:true}).click();
   await page.getByLabel('Имя профиля',{exact:true}).fill('Моё пространство');
   await page.getByLabel('О себе',{exact:true}).fill('Файлы и проекты');
+  await page.getByLabel('Название архива',{exact:true}).fill('Мой тихий архив');
   await page.getByRole('radio',{name:'Мятный',exact:true}).check();
   // Create a real raster image in the browser, then test the upload/crop pipeline.
   const png=await page.evaluate(()=>{const c=document.createElement('canvas');c.width=40;c.height=60;c.getContext('2d').fillRect(0,0,40,60);return c.toDataURL().split(',')[1];});
@@ -100,14 +102,16 @@ test('profile customizations persist across browsers and respect reduced motion'
   const other=await context.newPage();await other.goto('http://127.0.0.1:4178/cloud/');
   await expect(other.locator('.avatar.small img')).toBeVisible();
   expect(await other.evaluate(()=>getComputedStyle(document.documentElement).getPropertyValue('--accent').trim())).toBe('#83d8c0');
-  expect(await other.locator('.view-enter').evaluate(el=>getComputedStyle(el).animationName)).toBe('none');
+  expect(await other.locator('.content').evaluate(el=>getComputedStyle(el).animationName)).toBe('none');
+  await other.locator('.mobile-dock [data-action="settings"]').click();
   await other.getByRole('button',{name:'Настроить профиль',exact:true}).click();
   await expect(other.getByLabel('Имя профиля',{exact:true})).toHaveValue('Моё пространство');
   await expect(other.getByLabel('О себе',{exact:true})).toHaveValue('Файлы и проекты');
+  await expect(other.getByLabel('Название архива',{exact:true})).toHaveValue('Мой тихий архив');
   await other.getByLabel('Плавные анимации',{exact:true}).uncheck();
   await other.getByRole('button',{name:'Сохранить профиль',exact:true}).click();
   await expect(other.locator('html')).toHaveAttribute('data-motion','off');
-  await other.screenshot({path:'test-results/profile-mobile.png',fullPage:true});
+  await other.screenshot({path:'test-results/profile-mobile.png',fullPage:true,animations:'disabled'});
   await context.close();
 });
 test('public sharing creates a download page and revoked links stop working',async({browser,page})=>{
@@ -151,7 +155,7 @@ test('public image preview and actions fit a mobile screen',async({browser,page}
   expect(await recipient.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
   await recipient.getByRole('button',{name:'Копировать ссылку'}).click();
   await expect(recipient.locator('#copy-status')).toHaveText('Ссылка скопирована');
-  await recipient.screenshot({path:'test-results/public-preview-mobile.png',fullPage:true});
+  await recipient.screenshot({path:'test-results/public-preview-mobile.png',fullPage:true,animations:'disabled'});
   await page.getByRole('button',{name:'Отозвать',exact:true}).click();
   const response=await recipient.request.get(new URL('preview',recipient.url()+'/').href);expect(response.status()).toBe(404);
   await context.close();
@@ -184,4 +188,48 @@ test('Python source preview runs input in an isolated browser worker and can be 
   await expect(page.locator('#python-status')).toHaveText('Выполнение завершено',{timeout:20000});
   await expect(page.getByLabel('Результат Python')).toContainText('BLOCKED');
   await expect(page.getByLabel('Результат Python')).not.toContainText('LEAK');
+});
+test('archive design preserves server thumbnails and mobile preview navigation',async({page})=>{
+  const errors=[];page.on('pageerror',error=>errors.push(error.message));
+  await page.setViewportSize({width:390,height:844});
+  await page.goto('/cloud/');
+  const png=await page.evaluate(()=>{const c=document.createElement('canvas');c.width=300;c.height=200;const ctx=c.getContext('2d');ctx.fillStyle='#dfa080';ctx.fillRect(0,0,300,200);return c.toDataURL().split(',')[1];});
+  await page.locator('#file-input').setInputFiles([
+    {name:'Заметки архива.py',mimeType:'application/octet-stream',buffer:Buffer.from('print("Тихий архив")')},
+    {name:'Обложка архива.png',mimeType:'image/png',buffer:Buffer.from(png,'base64')},
+  ]);
+  await expect(page.locator('.upload-item').filter({hasText:'Обложка архива.png'})).toContainText('Загружен');
+  await page.getByLabel('Развернуть очередь загрузок',{exact:true}).click();
+  await expect(page.locator('.upload-list')).toBeVisible();
+  await page.getByLabel('Свернуть очередь загрузок',{exact:true}).click();
+  await expect(page.locator('.upload-list')).toBeHidden();
+  await page.locator('.file-name').filter({hasText:'Заметки архива.py'}).click();
+  await expect(page.getByRole('dialog',{name:'Предпросмотр'})).toBeVisible();
+  await expect(page.locator('#text-preview')).toHaveText('print("Тихий архив")');
+  await expect(page.locator('.upload-queue')).toBeHidden();
+  expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);
+  await page.screenshot({path:'/workspace/design-review/integrated/source-mobile.png',fullPage:true,animations:'disabled'});
+  await page.getByLabel('Закрыть предпросмотр').click();
+  await expect(page.locator('.upload-queue')).toBeVisible();
+  await page.getByRole('button',{name:'Убрать завершённые',exact:true}).click();
+  await page.getByLabel('Плитки',{exact:true}).click();
+  const tile=page.locator('.file-row').filter({hasText:'Обложка архива.png'});
+  await expect.poll(()=>tile.locator('img').evaluate(img=>img.naturalWidth)).toBe(300);
+  for(const width of [320,390,700,768,1024,1440]){
+    await page.setViewportSize({width,height:900});
+    expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth),`overflow at ${width}px`).toBe(true);
+  }
+  await page.getByLabel('Список',{exact:true}).click();
+  await page.evaluate(()=>window.scrollTo(0,0));
+  await page.screenshot({path:'/workspace/design-review/integrated/files-desktop.png',fullPage:true,animations:'disabled'});
+  await page.setViewportSize({width:390,height:844});
+  await expect.poll(()=>page.locator('.sidebar').evaluate(el=>el.getBoundingClientRect().right)).toBeLessThanOrEqual(0);
+  await page.evaluate(()=>window.scrollTo(0,0));
+  await page.screenshot({path:'/workspace/design-review/integrated/files-mobile.png',fullPage:true,animations:'disabled'});
+  await page.locator('[data-mobile-nav="links"]').click();
+  await expect(page.locator('.notice')).toContainText('действующими публичными ссылками');
+  await page.locator('.mobile-dock [data-action="settings"]').click();
+  await expect(page.locator('.profile-card')).toContainText('хранилище на сервере');
+  await page.screenshot({path:'/workspace/design-review/integrated/profile-mobile.png',fullPage:true,animations:'disabled'});
+  expect(errors).toEqual([]);
 });

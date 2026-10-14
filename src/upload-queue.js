@@ -18,6 +18,7 @@ async function fingerprint(file) {
 }
 export class UploadQueue {
   constructor(onCommitted) {
+    this.collapsed = matchMedia('(max-width:700px)').matches;
     this.onCommitted = onCommitted; this.files = new Map(); this.running = false; this.active = null; this.xhr = null; this.abort = null;
     try { this.items = JSON.parse(localStorage.getItem(KEY) || '[]').filter(item => item && /^[a-f0-9-]{36}$/.test(item.id) && typeof item.name==='string' && Number.isSafeInteger(item.size) && item.size>=0 && /^[a-f0-9]{64}$/.test(item.fingerprint)); } catch { this.items = []; }
     for (const item of this.items) if (!['done','cancelled'].includes(item.status)) { item.status='source'; item.offset=Number.isSafeInteger(item.offset)?Math.max(0,Math.min(item.offset,item.size)):0; item.loaded=item.offset; }
@@ -33,6 +34,7 @@ export class UploadQueue {
     };
     this.panel.onclick=event=>{
       const button=event.target.closest('button'); if(!button)return;
+      if(button.dataset.action==='toggle') { this.collapsed=!this.collapsed; this.render(); return; }
       if(button.dataset.action==='clear') { this.items=this.items.filter(q=>!['done','cancelled'].includes(q.status)); this.save(); return; }
       const item=this.items.find(q=>q.id===button.dataset.id); if(!item)return;
       if(button.dataset.action==='pause') this.pause(item);
@@ -73,8 +75,9 @@ export class UploadQueue {
   }
   render() {
     this.panel.hidden=!this.items.length;
+    this.panel.classList.toggle('collapsed',this.collapsed);
     const total=this.items.reduce((n,q)=>n+q.size,0), loaded=this.items.reduce((n,q)=>n+Math.min(q.loaded||0,q.size),0);
-    this.panel.innerHTML=`<header><strong>Загрузки · ${this.items.filter(q=>q.status==='done').length}/${this.items.length}</strong><button data-action="clear">Убрать завершённые</button></header><p>${bytes(loaded)} / ${bytes(total)} · ${total?Math.floor(100*loaded/total):0}%</p>${this.warning?`<p role="alert">${esc(this.warning)}</p>`:''}<div class="upload-list">${this.items.map(q=>{
+    this.panel.innerHTML=`<header><button data-action="toggle" aria-expanded="${!this.collapsed}" aria-label="${this.collapsed?'Развернуть очередь загрузок':'Свернуть очередь загрузок'}"><strong>Загрузки · ${this.items.filter(q=>q.status==='done').length}/${this.items.length}</strong><span aria-hidden="true">${this.collapsed?'⌃':'⌄'}</span></button><button data-action="clear">Убрать завершённые</button></header><p>${bytes(loaded)} / ${bytes(total)} · ${total?Math.floor(100*loaded/total):0}%</p>${this.warning?`<p role="alert">${esc(this.warning)}</p>`:''}<div class="upload-list">${this.items.map(q=>{
       const percent=q.size?Math.floor(100*Math.min(q.loaded||0,q.size)/q.size):q.status==='done'?100:0;
       const busy=['queued','uploading','checking','finishing','retrying'].includes(q.status);
       return `<div class="upload-item" data-status="${esc(q.status)}"><strong title="${esc(q.name)}">${esc(q.name)}</strong><span>${labels[q.status]||'Пауза'} · ${percent}%</span><progress max="100" value="${percent}" aria-label="${esc(q.name)}: ${percent}%"></progress><small>${bytes(q.loaded||0)} / ${bytes(q.size)}${q.speed?` · ${bytes(q.speed)}/с · ~${Math.ceil((q.size-(q.loaded||0))/q.speed)} с`:''}</small>${q.error?`<p role="alert">${esc(q.error)}</p>`:''}<div>${busy?`<button data-action="pause" data-id="${q.id}">Пауза</button>`:''}${!busy&&!['done','cancelled'].includes(q.status)?`<button data-action="resume" data-id="${q.id}">${this.files.has(q.id)?'Продолжить':'Выбрать файл'}</button>`:''}${!['done','cancelled'].includes(q.status)?`<button data-action="cancel" data-id="${q.id}">Отменить</button>`:''}</div></div>`;
