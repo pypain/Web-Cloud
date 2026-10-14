@@ -1,3 +1,4 @@
+import {mountReplica} from './replica.js';
 import { request, serverStorage, setSessionAuth } from './server-storage.js';
 export let account = null;
 const base=import.meta.env.BASE_URL;
@@ -36,7 +37,7 @@ function authPage(change=false){
 }
 async function adminPage(){
  if(account.role!=='admin'){shell('Доступ закрыт','<p>Этот раздел доступен только администратору.</p>');return;}
- shell('Аккаунты',`<p class="admin-intro">Создавайте личные хранилища и управляйте доступом. Файлы пользователей из админки не открываются.</p><section class="admin-create"><h2>Создать аккаунт</h2><form id="create-user"><label>Логин<input class="text-input" name="username" pattern="[a-z0-9][a-z0-9_.\\-]{2,31}" required minlength="3" maxlength="32" autocomplete="off"></label><label>Первый пароль<input class="text-input" name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label><label>Лимит, ГБ<input class="text-input" name="quota" type="number" value="20" min="1" max="100" required></label><label>Роль<select class="text-input" name="role"><option value="user">Пользователь</option><option value="admin">Администратор</option></select></label><button class="button primary">Создать аккаунт</button><p class="form-error" id="create-error" role="alert"></p></form></section><section><h2>Пользователи</h2><div id="admin-users" class="admin-users"></div></section><section class="audit-section"><h2>Журнал действий</h2><button id="refresh-audit" class="button secondary">Обновить журнал</button><div id="admin-audit"></div></section>`,true);
+ shell('Аккаунты',`<p class="admin-intro">Создавайте личные хранилища и управляйте доступом. Файлы пользователей из админки не открываются.</p><section id="admin-replica" class="replica-card"></section><section class="admin-create"><h2>Создать аккаунт</h2><form id="create-user"><label>Логин<input class="text-input" name="username" pattern="[a-z0-9][a-z0-9_.\\-]{2,31}" required minlength="3" maxlength="32" autocomplete="off"></label><label>Первый пароль<input class="text-input" name="password" type="password" required minlength="12" maxlength="256" autocomplete="new-password"></label><label>Лимит, ГБ<input class="text-input" name="quota" type="number" value="20" min="1" max="100" required></label><label>Роль<select class="text-input" name="role"><option value="user">Пользователь</option><option value="admin">Администратор</option></select></label><button class="button primary">Создать аккаунт</button><p class="form-error" id="create-error" role="alert"></p></form></section><section><h2>Пользователи</h2><div id="admin-users" class="admin-users"></div></section><section class="audit-section"><h2>Журнал действий</h2><button id="refresh-audit" class="button secondary">Обновить журнал</button><div id="admin-audit"></div></section>`,true);
  const refresh=async()=>{
   const {users}=await (await request('admin/users')).json();
   document.querySelector('#admin-users').innerHTML=users.map(user=>`<form class="admin-user" data-user="${user.id}"><div class="admin-user-heading"><h3>${esc(user.username)} ${user.id===account.id?'<small>· ваш аккаунт</small>':''}</h3><span class="account-badge">${user.enabled?'Активен':'Заблокирован'}</span></div><p>${pretty(user.used)} из ${pretty(user.quota)} · ${user.last_login?'Последний вход: '+esc(new Date(user.last_login*1000).toLocaleString('ru')):'Ещё не входил'}</p><div class="admin-fields"><label>Роль<select class="text-input" name="role" ${user.id===account.id?'disabled':''}><option value="user" ${user.role==='user'?'selected':''}>Пользователь</option><option value="admin" ${user.role==='admin'?'selected':''}>Администратор</option></select></label><label>Лимит, ГБ<input class="text-input" name="quota" type="number" min="1" max="100" step="0.01" value="${user.quota/gb}" required></label><label>Новый пароль (необязательно)<input class="text-input" name="password" type="password" minlength="12" maxlength="256" autocomplete="new-password"></label><label class="password-toggle"><input type="checkbox" name="enabled" ${user.enabled?'checked':''} ${user.id===account.id?'disabled':''}> Аккаунт активен</label><button class="button secondary">Сохранить аккаунт</button></div><p class="field-note">Сброс пароля или смена роли завершат все сеансы. Блокировка также отзовёт публичные ссылки; файлы сохранятся.</p><p class="form-error" role="alert"></p></form>`).join('');
@@ -49,7 +50,7 @@ async function adminPage(){
    catch(e){error(target,e.message);button.disabled=false;}
   });
  };
- const labels={'account.created':'Создание аккаунта','account.updated':'Изменение аккаунта','password.reset':'Сброс пароля','password.changed':'Смена пароля','login.success':'Успешный вход','login.failed':'Неудачная попытка входа'};
+ const labels={'account.created':'Создание аккаунта','account.updated':'Изменение аккаунта','password.reset':'Сброс пароля','password.changed':'Смена пароля','login.success':'Успешный вход','login.failed':'Неудачная попытка входа','replica.key.rotated':'Ключ копирования обновлён'};
  const audit=async()=>{
   const {events}=await(await request('admin/audit')).json();
   document.querySelector('#admin-audit').innerHTML=`<ol class="audit-list">${events.map(event=>`<li><time>${esc(new Date(event.at*1000).toLocaleString('ru'))}</time><span>${esc(event.actor)} · ${esc(labels[event.event]||event.event)} · ${esc(event.target)}</span></li>`).join('')}</ol>`;
@@ -61,7 +62,7 @@ async function adminPage(){
   catch(e){error(document.querySelector('#create-error'),e.message);}
   finally{button.disabled=false;}
  };
- await refresh();await audit();
+ await refresh();await audit();await mountReplica(document.querySelector('#admin-replica'));
 }
 export async function accountGate(){
  if(!serverStorage)return false;

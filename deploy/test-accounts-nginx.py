@@ -4,6 +4,7 @@ import argparse,json,pathlib,subprocess,sys,tempfile,threading,time,uuid
 sys.path.insert(0,str(pathlib.Path(__file__).resolve().parents[1]/'backend'))
 from server import Store,Handler,UnixServer,Problem
 from accounts import Accounts
+from replica import Replica
 parser=argparse.ArgumentParser();parser.add_argument('--nginx',required=True);args=parser.parse_args()
 repo=pathlib.Path(__file__).resolve().parents[1]
 with tempfile.TemporaryDirectory(prefix='cloud-nginx-') as directory:
@@ -15,6 +16,8 @@ with tempfile.TemporaryDirectory(prefix='cloud-nginx-') as directory:
     backend.accounts=Accounts(backend.store,Problem)
     admin=backend.accounts.create('cloudadmin','Admin password 123!',role='admin',legacy=True)
     alice=backend.accounts.create('alice','Alice password 123!')
+    backend.replica=Replica(backend.store,backend.accounts,Problem)
+    replica_key=backend.replica.rotate()['key']
     backend.origin='https://hxry.ru:18443'
     thread=threading.Thread(target=backend.serve_forever,daemon=True);thread.start()
     snippet=(repo/'deploy/hxry-cloud-accounts.conf').read_text().replace('__BACKEND_TOKEN__','test-nginx-token').replace('/run/hxry-cloud/backend.sock',str(root/'backend.sock')).replace('/var/www/hxry-cloud/current',str(repo/'dist'))
@@ -61,6 +64,8 @@ with tempfile.TemporaryDirectory(prefix='cloud-nginx-') as directory:
         assert call('GET','/account')[1]==b'Original account'
         assert call('GET','/cloud/api/state')[0]==401
         assert call('GET','/cloud/api/admin/users')[0]==401
+        assert call('GET','/cloud/api/replica/snapshot')[0]==401
+        assert call('GET','/cloud/api/replica/snapshot',public_headers={'X-Cloud-Replica':replica_key})[0] in (200,202)
         assert call('GET','/cloud/python-runtime/pyodide.js')[0]==200
         code,body,headers=call('PUT','/cloud/api/auth/login',{'username':'alice','password':'Alice password 123!'})
         assert code==200,(code,body)
@@ -71,6 +76,7 @@ with tempfile.TemporaryDirectory(prefix='cloud-nginx-') as directory:
         assert call('PUT','/cloud/api/state',{},cookie=cookie)[0]==403
         assert call('PUT','/cloud/api/state',{},cookie=cookie,csrf=csrf,public_headers={'Origin':'https://evil.example'})[0]==403
         assert call('GET','/cloud/api/admin/users',cookie=cookie)[0]==403
+        assert call('GET','/cloud/api/admin/replica',cookie=cookie)[0]==403
         assert call('GET','/cloud/api/state',public_headers={'X-Cloud-Public':'1'})[0]==401
         ident=str(uuid.uuid4());assert call('PUT','/cloud/api/files/'+ident,b'Private tenant file',cookie,csrf)[0]==201
         state=json.loads(call('GET','/cloud/api/state',cookie=cookie)[1])

@@ -25,15 +25,17 @@ old_ui=$(readlink "$root/current"); old_backend=$(readlink "$backend/current")
 [[ ! -e $root/releases/$ref && ! -e $backend/releases/$ref ]] || { echo 'Release already exists; refusing overwrite'; exit 1; }
 backup=$(mktemp -d /root/hxry-upload-upgrade-XXXXXXXX)
 chmod 700 "$backup"
+curl -fSL "$url/backend/replica.py" -o "$backup/replica.py"
 curl -fSL "$url/backend/accounts.py" -o "$backup/accounts.py"
 curl -fSL "$url/backend/server.py" -o "$backup/server.py"
 curl -fSL "$url/deploy/server-dist.tar.gz" -o "$backup/server-dist.tar.gz"
 curl -fSL "$url/deploy/public-shares.conf" -o "$backup/public-shares.conf"
 curl -fSL "$url/deploy/python-runtime.conf" -o "$backup/python-runtime.conf"
 cp -p /etc/nginx/snippets/hxry-cloud.conf "$backup/snippet.conf"
-printf '%s  %s\n' '0962704d4766dc46ef1fba7ed9463e46f97c1788ab1d960a61dae67eb0bf7429' "$backup/server.py" | sha256sum -c -
-printf '%s  %s\n' '1994513023a9c4d3cac0cf03709eea3db25ae9ce049dd461ad5701e2643c90ff' "$backup/server-dist.tar.gz" | sha256sum -c -
+printf '%s  %s\n' '34dc2c254bfcb2a2f54f9c5df40deb4711a7b875352bb07f868f26a891f29415' "$backup/server.py" | sha256sum -c -
+printf '%s  %s\n' 'cf6063e1bd0f23d4ed67cb36312c6bf5b06ba143f64765afe1effe309ebdb43c' "$backup/server-dist.tar.gz" | sha256sum -c -
 printf '%s  %s\n' '74f7862e10ec80f624603bd0df60ef200a95cb0ad489de3371b8ec852f4955b9' "$backup/accounts.py" | sha256sum -c -
+printf '%s  %s\n' 'f036ada78e7426d8fcaa3eb6464e364a5b1b0dfdd3896f3f0be069e05d4a8929' "$backup/replica.py" | sha256sum -c -
 python3 - "$backup/server-dist.tar.gz" <<'PY'
 import pathlib,sys,tarfile
 with tarfile.open(sys.argv[1]) as archive:
@@ -88,6 +90,7 @@ trap rollback ERR
 install -d -m 755 "$root/releases/$ref" "$backend/releases/$ref"
 install -m 644 "$backup/server.py" "$backend/releases/$ref/server.py"
 install -m 644 "$backup/accounts.py" "$backend/releases/$ref/accounts.py"
+install -m 644 "$backup/replica.py" "$backend/releases/$ref/replica.py"
 tar -C "$root/releases/$ref" -xzf "$backup/server-dist.tar.gz" --no-same-owner
 find "$root/releases/$ref" -type d -exec chmod 755 {} +
 find "$root/releases/$ref" -type f -exec chmod 644 {} +

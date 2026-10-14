@@ -226,3 +226,29 @@ and a Unix socket without modifying host configuration. Browser tests verify
 owner preservation, independent users, admin access, reset/block, session
 revocation, resumed uploads and mobile layouts. Legacy storage tests remain
 available to validate the code prior to migration.
+
+## Laptop mirror
+
+The account-enabled backend exposes dedicated `/replica/` API routes for an
+administrator-issued laptop key. Ordinary website users cannot issue keys or
+read aggregate status. A device can read committed files, download validated
+metadata inventories and post confirmations/telemetry only; it cannot alter
+source files, profiles or accounts. Device keys are stored hashed; raw keys are
+shown once and never included in request URLs or logs. Rotations invalidate
+old keys and reset confirmations while retaining source hash caches.
+
+Snapshots include all users (also disabled accounts) and trash, excluding staged
+files and unfinished upload parts. Content is transferred separately by UUID
+with HTTP Range support, while inventories and consistent SQLite snapshots use
+verified metadata archives. Sessions and login attempts are removed from the
+recovery metadata, and public share routing is reconstructed from captured
+per-user shares. Source disk/table errors abort preparation and never authorize
+laptop deletion. SHA-256 cache keys use file identity, size and nanosecond times.
+Background capture never waits on an active upload while holding account locks.
+
+Admin percentages compare current file bytes with matching verified laptop
+confirmations. Metadata and pending deletion lag are shown separately; active
+partial transfer bytes do not count as a completed file. Final completion is
+accepted only after inventory confirmations and source metadata signatures match.
+This is a deletion-synchronized mirror, not versioned backup history. See
+[laptop installation, scheduling, budgets and recovery](../laptop/README.md).

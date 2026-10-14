@@ -34,3 +34,8 @@ subsequent runs retain it. Use `/cloud/auth/` to sign in and `/cloud/admin/` to
 manage users. Keep the displayed rollback path, and never upload private backups.
 Pause uploads before migration. See [account security, data layout and console
 recovery](../backend/README.md#website-accounts-closed-registration).
+
+The current account installer also deploys `backend/replica.py`. After updating
+the VPS, generate the laptop key in the admin card and use the separately pinned
+Arch installer from the same release. No existing nginx routes, SSH keys or
+firewall ports are changed for the laptop; it pulls over the existing HTTPS API.

@@ -61,3 +61,16 @@ test('password change revokes other sessions, account-scoped queue survives relo
  await page.setViewportSize({width:390,height:844});await page.screenshot({path:'/workspace/design-review/accounts/login-mobile.png',fullPage:true,animations:'disabled'});
  await context.close();
 });
+test('administrator sees laptop copy lag and can issue a scoped connection key',async({page})=>{
+ await login(page,'cloudadmin','Admin password 123!');await page.goto('/cloud/admin/');
+ const status=page.locator('#replica-status');await expect(status).toContainText('ещё не подтверждено ноутбуком');
+ await expect(status).toContainText('Не подключён');
+ page.on('dialog',dialog=>dialog.accept());
+ await page.getByRole('button',{name:'Подключить ноут / заменить ключ',exact:true}).click();
+ const key=page.getByLabel('Ключ подключения · показывается только сейчас');await expect(key).toBeVisible();
+ expect(await key.inputValue()).toMatch(/^[A-Za-z0-9_-]{43}$/);
+ await expect(status).toContainText('Нет связи');
+ await page.getByRole('button',{name:'Скрыть ключ',exact:true}).click();await expect(key).toHaveCount(0);
+ for(const width of [320,390,700,1440]){await page.setViewportSize({width,height:900});expect(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth)).toBe(true);}
+ await page.setViewportSize({width:390,height:844});await page.locator('#admin-replica').screenshot({path:'/workspace/design-review/replica/admin-mobile.png',animations:'disabled'});
+});

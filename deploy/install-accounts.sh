@@ -22,14 +22,15 @@ fi
 backup=$(mktemp -d /root/hxry-accounts-backup-XXXXXXXX)
 chmod 700 "$backup"
 url=https://raw.githubusercontent.com/pypain/Web-Cloud/$ref
-for path in backend/server.py backend/accounts.py backend/manage-accounts.py deploy/server-dist.tar.gz deploy/hxry-cloud-accounts.conf; do
+for path in backend/server.py backend/accounts.py backend/manage-accounts.py backend/replica.py deploy/server-dist.tar.gz deploy/hxry-cloud-accounts.conf; do
     curl -fSL "$url/$path" -o "$backup/${path##*/}"
 done
-printf '%s  %s\n' '0962704d4766dc46ef1fba7ed9463e46f97c1788ab1d960a61dae67eb0bf7429' "$backup/server.py" | sha256sum -c -
+printf '%s  %s\n' '34dc2c254bfcb2a2f54f9c5df40deb4711a7b875352bb07f868f26a891f29415' "$backup/server.py" | sha256sum -c -
 printf '%s  %s\n' '74f7862e10ec80f624603bd0df60ef200a95cb0ad489de3371b8ec852f4955b9' "$backup/accounts.py" | sha256sum -c -
 printf '%s  %s\n' '650bdcd28db96cac08b898d6a0b86aae90a0060feb284f4b16f608644e714f01' "$backup/manage-accounts.py" | sha256sum -c -
-printf '%s  %s\n' '1994513023a9c4d3cac0cf03709eea3db25ae9ce049dd461ad5701e2643c90ff' "$backup/server-dist.tar.gz" | sha256sum -c -
+printf '%s  %s\n' 'cf6063e1bd0f23d4ed67cb36312c6bf5b06ba143f64765afe1effe309ebdb43c' "$backup/server-dist.tar.gz" | sha256sum -c -
 printf '%s  %s\n' '94eda424e1aaa7bd965f3692157fcdc5f17a69d2e1279d2d8a909410060cbd4b' "$backup/hxry-cloud-accounts.conf" | sha256sum -c -
+printf '%s  %s\n' 'f036ada78e7426d8fcaa3eb6464e364a5b1b0dfdd3896f3f0be069e05d4a8929' "$backup/replica.py" | sha256sum -c -
 cp -p "$snippet" "$backup/snippet.conf"
 printf '%s\n' "$old_ui" > "$backup/ui-link"
 printf '%s\n' "$old_backend" > "$backup/backend-link"
@@ -76,7 +77,7 @@ for name in ui backend; do
   fi
 done
 install -d -m 755 "$root/releases/$ref" "$backend/releases/$ref"
-for name in server.py accounts.py manage-accounts.py; do install -m 644 "$backup/$name" "$backend/releases/$ref/$name";done
+for name in server.py accounts.py manage-accounts.py replica.py; do install -m 644 "$backup/$name" "$backend/releases/$ref/$name";done
 tar -C "$root/releases/$ref" -xzf "$backup/server-dist.tar.gz" --no-same-owner
 find "$root/releases/$ref" -type d -exec chmod 755 {} +
 find "$root/releases/$ref" -type f -exec chmod 644 {} +

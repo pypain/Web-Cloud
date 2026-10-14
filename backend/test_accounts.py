@@ -1,3 +1,4 @@
+from replica import Replica
 import hashlib
 import json
 import time
@@ -24,6 +25,7 @@ class AccountTests(unittest.TestCase):
         self.old_share=json.loads(self.request('PUT','/shares/'+sid,{'fileId':self.old_file['id'],'ttl':3600})[2])
         self.store.quota=20*1024**3
         self.accounts=Accounts(self.server.store,Problem);self.server.accounts=self.accounts
+        self.server.replica=Replica(self.server.store,self.accounts,Problem)
         self.admin=self.accounts.create('cloudadmin','Admin password 123!',role='admin',legacy=True)
         self.alice=self.accounts.create('alice','Alice password 123!')
         self.bob=self.accounts.create('bob','Bob password 123!')

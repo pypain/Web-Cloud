@@ -2,6 +2,7 @@
 """Isolated cloud stores, private Unix socket, optional website account sessions."""
 import hmac
 from accounts import Accounts, COOKIE
+from replica import Replica
 import hashlib
 import base64
 import struct
@@ -351,6 +352,10 @@ class Handler(BaseHTTPRequestHandler):
             accounts=getattr(self.server,'accounts',None)
             if accounts and write and self.headers.get('Origin')!=self.server.origin:raise Problem(403,'Wrong request origin')
             if public and (write or not path.startswith('/share/')): raise Problem(403,'Forbidden')
+            if not public and path.startswith('/replica/'):
+                replica=getattr(self.server,'replica',None)
+                if not replica:raise Problem(404,'Laptop replication is not enabled')
+                return replica.handle(self,path,parsed,write)
             if not public and path=='/auth/me' and not accounts:return self.reply(200,{'accounts':False})
             if accounts and not public and path.startswith('/auth/'):
                 return self.account_request(accounts,path,write)
@@ -572,6 +577,12 @@ class Handler(BaseHTTPRequestHandler):
 
     def admin_request(self, accounts, user, path, write):
         if user['role']!='admin':raise Problem(403,'Доступно только администратору.')
+        if path=='/admin/replica' and not write:
+            return self.reply(200,self.server.replica.status())
+        if path=='/admin/replica/key' and self.command=='PUT':
+            result=self.server.replica.rotate()
+            with accounts.connect() as db:accounts.audit(db,user['id'],'replica.key.rotated','Arch laptop')
+            return self.reply(200,result)
         if path=='/admin/users' and not write:
             with accounts.connect() as db:rows=db.execute('SELECT * FROM users ORDER BY created,username').fetchall()
             users=[]
@@ -633,6 +644,7 @@ if __name__ == '__main__':
                          quota=int(os.environ.get('CLOUD_QUOTA', 20*1024**3)),
                          max_file=int(os.environ.get('CLOUD_MAX_FILE', 5*1024**3)))
     server.accounts = Accounts(server.store,Problem) if (server.store.root/'accounts.sqlite').exists() else None
+    server.replica = Replica(server.store,server.accounts,Problem) if server.accounts else None
     server.origin = os.environ.get('CLOUD_ORIGIN', 'https://hxry.ru')
     def housekeeping():
         while True:

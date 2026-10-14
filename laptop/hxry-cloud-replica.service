@@ -1,0 +1,28 @@
+[Unit]
+Description=Verified resumable pull mirror of hxry cloud
+Wants=network-online.target
+After=network-online.target
+RequiresMountsFor=/var/lib/hxry-cloud-replica
+
+[Service]
+Type=oneshot
+User=hxry-cloud-replica
+Group=hxry-cloud-replica
+ExecStart=/usr/bin/python3 /opt/hxry-cloud-replica/current/agent.py --config /etc/hxry-cloud-replica/config.json
+TimeoutStartSec=0
+TimeoutStopSec=20
+UMask=0077
+Nice=10
+CPUWeight=20
+IOWeight=20
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictSUIDSGID=yes
+CapabilityBoundingSet=
+ReadWritePaths=/var/lib/hxry-cloud-replica
